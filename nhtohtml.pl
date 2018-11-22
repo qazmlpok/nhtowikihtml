@@ -25,6 +25,8 @@
 use strict;
 use warnings;
 
+use Data::Dumper;
+
 my $rev = '$Revision: 1.95w $ ';
 my ($version) = $rev=~ /Revision:\s+(.*?)\s?\$/;
 
@@ -50,7 +52,16 @@ die "SLASHTHEM is not supported." if $nethome =~ /SlashTHEM/i;
 #TODO: If other variants need special logic, add checks here
 #(I haven't kept up to date on variants)
 #Including the various SLASH'EM forks
-my $slashem = $nethome =~ /slashem/;  #Modify the src reference
+my $slashem = $nethome =~ /slashem/i;  #Modify the src reference
+my $dnethack = $nethome =~ /dnethack/i;
+
+if ($dnethack) {
+    #Oops. dNetHack has built-in capability for printing wiki templates.
+    #I started working on this, but the built in should be far more accurate.
+    print "====\n";
+    print "Consider using printMons() in $nethome/src/allmain.c instead.\n\n";
+    print "====\n";
+}
 
 #Try to calculate the version. There's a handful of changes
 # - there's a bug in xp calculation for non-attacks that was fixed in 3.6.0
@@ -66,6 +77,7 @@ if ($nethome =~ /nethack-(\d\.\d\.\d)/) {
 }
 
 $base_nhver = '3.4.3' if $slashem;      #Or any other variant.
+$base_nhver = '3.4.3' if $dnethack;     #Also based off 3.4.3
 
 print "Using NetHack version $base_nhver\n\n" unless $slashem;
 print "Using SLASH'EM. Only 0.0.7E7F3 is really supported.\n\n" if $slashem;
@@ -81,8 +93,14 @@ my %flags = (
     MR_POISON  =>      'poison',
     MR_ACID    =>      'acid',
     MR_STONE   =>      'petrification',
-    MR_DEATH   =>      'death magic', #SLASH'EM
-    MR_DRAIN   =>      'level drain', #SLASH'EM
+    
+    #SLASH'EM
+    MR_DEATH   =>      'death magic',
+    MR_DRAIN   =>      'level drain',
+    
+    #dNetHack
+    MR_SICK    =>      'sickness',
+    #MR_DRAIN
 
     G_UNIQ     =>      'generated only once',
     G_NOHELL   =>      'nohell',
@@ -90,16 +108,19 @@ my %flags = (
     G_NOGEN    =>      'generated only specially',
     G_SGROUP   =>      'appear in small groups normally',
     G_LGROUP   =>      'appear in large groups normally',
-    G_VLGROUP  =>      'appear in very large groups normally', #SLASH'EM
     G_GENO     =>      'can be genocided',
-    G_NOCORPSE =>      'nocorpse'
+    G_NOCORPSE =>      'nocorpse',
+    
+    #SLASH'EM
+    G_VLGROUP  =>      'appear in very large groups normally',
+    
+    
 );
 
-my %defined_weights = (
-    WT_HUMAN  =>        '1450',
-    WT_ELF    =>        '800',
-    WT_DRAGON =>        '4500',
-);
+#Flags parsed from permonst.h. In vanilla, these are just WT_* flags, which are
+#only used for human, elf, and dragon. dnethack also adds nutrition, CN_*
+#Keeping them in a single hash, since they have different prefixes.
+my $permonst_flags = parse_permonst("$nethome/include/permonst.h");
 
 my %sizes = (
     MZ_TINY     =>      'Tiny',
@@ -158,10 +179,39 @@ my %attacks = (
     AT_BOOM => "Explode",    #When Killed
     AT_GAZE => "Gaze",
     AT_TENT => "Tentacles",
-    AT_MULTIPLY => "Multiply",    #SLASH'EM
     AT_WEAP => "Weapon",
     AT_MAGC => "[[monster spell|Spell-casting]]"
 );
+
+my %slashem_attacks = (
+    AT_MULTIPLY => "Multiply",
+);
+
+my %dnethack_attacks = (
+    AT_ARRW	=> "Arrow",
+    AT_WHIP	=> "Whip",
+    AT_LRCH	=> "Reach",
+    AT_HODS	=> "Your weapon",      #Hod Sephirah's mirror attack
+    AT_LNCK	=> "Bite (Reach)",
+    AT_MMGC	=> "Monster Magic",    #"but don't allow player spellcasting"
+    AT_ILUR	=> "Engulf",           #Two stage swallow attack, currently belongs to Illurien only	
+    AT_HITS	=> "Automatic hit",
+    AT_WISP	=> "Mist tendrils",
+    AT_TNKR	=> "Tinker",
+    AT_SHDW	=> "Shadow blades",
+    AT_BEAM	=> "Beam",
+    AT_DEVA	=> "Deva Arms",
+    AT_5SQR	=> "five-square-reach touch",
+    AT_WDGZ	=> "wide-angle (passive) gaze",    #like medusa
+
+    AT_WEAP	=> "Weapon",
+    AT_XWEP	=> "Offhand Weapon",
+    AT_MARI	=> "Multiarm Weapon",
+    AT_MAGC	=> "Cast",
+);
+
+%attacks = (%attacks, %slashem_attacks) if $slashem;
+%attacks = (%attacks, %dnethack_attacks) if $dnethack;
 
 my %damage = (
     AD_PHYS =>    "",    #Physical attack; nothing special about it
@@ -215,21 +265,127 @@ my %damage = (
     AD_SAMU =>    " [[covetous|amulet-stealing]]",    #Quest nemesis should have "[[covetous|quest-artifact-stealing]]"
     AD_CURS =>    " [[intrinsic]]-stealing",
 
+    #Used by the beholder in NetHack, but not implemented.
+    #Added this definition just to avoid undef warnings
+    AD_CNCL =>    " Unimplemented",
+);
+
+my %slashem_damage = (
     #SLASH'EM specific defines
     AD_TCKL =>    " tickle",
     AD_POLY =>    " [[polymorph]]",
     AD_CALM =>    " calm",
-    
-    #Used by the beholder in NetHack, but not implemented.
-    #Added this definition just to avoid undef warnings
-    AD_CNCL =>    " Unimplemented",
-);                  
+);
+
+#These aren't matching up with the values in allmain!
+my %dnethack_damage = (
+    AD_POSN	 => " [[poison]] (HP damage)",
+    AD_WISD	 => " [[wis drain]]",
+    AD_VORP	 => " [[vorpal]]",
+    AD_SHRD	 => " [[armor shredding]]",
+    AD_SLVR	 => " [[silver]]",           #arrows should be silver
+    AD_BALL	 => " [[cannon ball]]",      #arrows should be iron balls
+    AD_BLDR	 => " [[boulder]]",          #arrows should be boulders
+    AD_VBLD	 => " [[random boulder]]",   #arrows should be boulders and fired in a random spread
+    AD_TCKL	 => " [[tickling]]",
+    AD_WET	 => " [[soaking]]",
+    AD_LETHE => " [[lethe]]",
+    AD_BIST	 => " [[bisection]]",        #Not implemented
+    AD_CNCL	 => " [[cancellation]]",
+    AD_DEAD	 => " [[deadly]]",           #deadly gaze
+    AD_SUCK	 => " [[suction]]",
+    AD_MALK	 => " [[malkuth]]",
+    AD_UVUU	 => " [[uvuudaum brainspike]]",
+    AD_ABDC	 => " [[abduction]]",
+    AD_KAOS	 => " [[spawn Chaos]]",
+    AD_LSEX	 => " [[seduction]]",        #Deprecated
+    AD_HLBD	 => " [[hellblood]]",
+    AD_SPNL	 => " [[spawn Leviathan]]",
+    AD_MIST	 => " [[mist projection]]",
+    AD_TELE	 => " [[teleport away]]",
+    AD_POLY	 => " [[baleful polymorph]]",#Monster alters your DNA (was for the now-defunct genetic enginier Q)
+    AD_PSON	 => " [[psionic]]",          #DEFERED psionic attacks.
+    AD_GROW	 => " [[promotion]]",
+    AD_SOUL	 => " [[shared soul]]",
+    AD_TENT	 => " [[intrusion]]",
+    AD_JAILER=> " [[jailer]]",
+    AD_AXUS	 => " [[special]]",          #Multi-element counterattack, angers 'tons
+    AD_UNKNWN=> " [[take artifact]]",    #Priest of an unknown God
+    AD_SOLR	 => " [[silver]]",           #Light Archon's silver arrow attack
+    AD_CHKH	 => " [[special]]",          #Chokhmah Sephirah's escalating damage attack
+    AD_HODS	 => " [[your weapon]]",      #Hod Sephirah's mirror attack
+    AD_CHRN	 => " [[cursed unicorn horn]]",
+    AD_LOAD	 => " [[loadstone]]",
+    AD_GARO	 => " [[garo report]]",      #blows up after dispensing rumor
+    AD_GARO_MASTER => " [[garo report]]",  #blows up after dispensing oracle
+    AD_LVLT	 => " [[level teleport]]",
+    AD_BLNK	 => " [[blink]]",            #mental invasion (weeping angel)
+    AD_WEEP	 => " [[angel's touch]]",    #Level teleport and drain (weeping angel)
+    AD_SPOR	 => " [[spore]]",
+    AD_FNEX	 => " [[explosive spore]]",  #FerN spore EXplosion
+    AD_SSUN	 => " [[sunlight]]",         #Slaver Sunflower gaze
+    AD_MAND	 => " [[deadly shriek]]",    #Mandrake's dying shriek (kills all on level, use w/ AT_BOOM)
+    AD_BARB	 => " [[barbs]]",
+    AD_LUCK	 => " [[luck drain]]",       #Luck-draining gaze (UnNetHack)
+    AD_VAMP	 => " [[vampiric]]",
+    AD_WEBS	 => " [[webbing]]",
+    AD_ILUR	 => " [[special]]",          #memory draining engulf attack belonging to Illurien
+    AD_TNKR	 => " [[spawn gizmos]]",
+    AD_FRWK	 => " [[fireworks]]",
+    AD_STDY	 => " [[study]]",
+    AD_OONA	 => " [[fire]], [[cold]], or [[shock]]",     #Oona's variable energy type and v and e spawning
+    AD_NTZC	 => " [[netzach]]",          #netzach sephiroth's anti-equipment attack
+    AD_WTCH	 => " [[special]]",          #The Watcher in the water's tentacle-spawning gaze
+    AD_SHDW	 => " [[shadow]]",
+    AD_STTP	 => " [[armor teleportation]]",
+    AD_HDRG	 => " [[half-dragon breath]]",
+    AD_STAR	 => " [[silver rapier]]",    #Tulani silver starlight rapier
+    AD_EELC	 => " elemental [[shock]]",  #Elemental electric
+    AD_EFIR	 => " elemental [[fire]]",
+    AD_EDRC	 => " elemental [[poison]]",
+    AD_ECLD	 => " elemental [[cold]]",
+    AD_EACD	 => " elemental [[acid]]",
+    AD_CNFT	 => " conflict",
+    AD_BLUD	 => " blood blade",
+    AD_SURY	 => " Surya Deva arrow",         #Surya Deva's arrow of slaying
+    AD_NPDC	 => " [[constitution]] drain",   #drains constitution (not poison)
+
+    #The rest don't match what's in allmain.c...
+    # AD_GLSS	 => 118,        #silver mirror shards
+    AD_MERC	 => " mercury blade",        #mercury blade
+    # 
+    # AD_DUNSTAN	120,
+    # AD_IRIS		121,
+    # AD_NABERIUS	122,
+    # AD_OTIAX	123,
+    # AD_SIMURGH	124,
+    # 
+    # AD_CMSL     125,
+    # AD_FMSL     126,
+    # AD_EMSL     127,
+    # AD_SMSL     128,
+    # 
+    # #AD_CLRC   129,
+    # #AD_SPEL    130,
+    AD_RGAZ     => " random",
+    AD_RETR     => " random elemental",
+    # 
+    # #AD_SAMU   133,
+    # #AD_CURS   134,
+    # AD_SQUE,
+);
+%damage = (%damage, %dnethack_damage) if $dnethack;
+%damage = (%damage, %slashem_damage) if $slashem;
 
 # Some monster names appear twice (were-creatures).  We use the
 # mon_count hash to keep track of them and flag cases where we need to
 # specify.
 my %mon_count;
 
+#Dumping place for flags that need to be manually set.
+#Variants will likely add new damage types, attack types, resistances...
+#If these aren't found it will print a "undefined value" warning somewhere.
+my %unknowns;
 
 # The main monster parser.  Takes a MON() construct from monst.c and
 # breaks it down into its components.
@@ -243,24 +399,15 @@ sub process_monster {
     $the_mon =~ s/\/\*.*?\*\///g;
     my $target_ac = $the_mon =~ /MARM\(-?\d+,\s*(-?\d+)\)/;
     $the_mon =~ s/MARM\((-?\d+),\s*-?\d+\)/$1/;
-    
-=nh3.4.3
-    MON("fox", S_DOG,
-	LVL(0, 15, 7, 0, 0), (G_GENO|1),
-	A(ATTK(AT_BITE, AD_PHYS, 1, 3), NO_ATTK, NO_ATTK,
-	  NO_ATTK, NO_ATTK, NO_ATTK),
-	SIZ(300, 250, 0, MS_BARK, MZ_SMALL), 0, 0,
-	M1_ANIMAL|M1_NOHANDS|M1_CARNIVORE, M2_HOSTILE, M3_INFRAVISIBLE,
-	CLR_RED),
-=cut
 
 =nh3.6.0
     MON("fox", S_DOG, LVL(0, 15, 7, 0, 0), (G_GENO | 1),
-        A(ATTK(AT_BITE, AD_PHYS, 1, 3), NO_ATTK, NO_ATTK, NO_ATTK, NO_ATTK,
-          NO_ATTK),
-        SIZ(300, 250, MS_BARK, MZ_SMALL), 0, 0,
-        M1_ANIMAL | M1_NOHANDS | M1_CARNIVORE, M2_HOSTILE, M3_INFRAVISIBLE,
-        CLR_RED),
+        A(ATTK(AT_BITE, AD_PHYS, 1, 3), NO_ATTK, NO_ATTK, NO_ATTK, NO_ATTK, NO_ATTK),
+        SIZ(300, 250, MS_BARK, MZ_SMALL), 0, 0,     #SIZ, mresists, mconveys
+        M1_ANIMAL | M1_NOHANDS | M1_CARNIVORE,      #mflags1
+        M2_HOSTILE,                                 #mflags2
+        M3_INFRAVISIBLE,                            #mflags3
+        CLR_RED),                                   #mcolor
 =cut
 
     my @m_res = $the_mon =~ 
@@ -294,6 +441,8 @@ sub process_monster {
     #use Data::Dumper;
     #print Dumper(\@m_res);
     #exit;
+
+    die "monster parse error" unless $lvl;
 
     $col = "NO_COLOR" if ($name eq "ghost" || $name eq "shade");
     my $mon_struct = {
@@ -332,12 +481,112 @@ sub process_monster {
     push @monsters, $mon_struct;
     #print STDERR "$mon_struct->{NAME} ($symbols{$mon_struct->{SYMBOL}}): $mon_struct->{LEVEL}->{LVL}\n";
     $mon_count{$name}++;
-};
+}
+sub process_monster_dnethack {
+    #TODO: This should use a class or something.
+    #Copied from process_monster and tweaked. Some of this can be extracted...
+    
+    my $the_mon = shift;
+    my $line = shift;
+    my ($name) = $the_mon=~/\s+MON\("(.*?)",/;
 
+    #Remove ALL spaces
+    $the_mon =~ s/\s//g;
+    $the_mon =~ s/\/\*.*?\*\///g;
+    my $target_ac = $the_mon =~ /MARM\(-?\d+,\s*(-?\d+)\)/;
+    $the_mon =~ s/MARM\((-?\d+),\s*-?\d+\)/$1/;
+
+=dnethack
+    MON("fox", S_DOG,//1
+	LVL(0, 15, 7, 0, 0), (G_GENO|1),
+	A(ATTK(AT_BITE, AD_PHYS, 1, 3), NO_ATTK, NO_ATTK, NO_ATTK, NO_ATTK, NO_ATTK),
+	SIZ(WT_TINY*2, CN_SMALL, 0, MS_BARK, MZ_TINY), 0, 0,    #SIZ, mresists, mconveys
+	0 /*MM*/,                                               #mflagsm - Monster Motility boolean bitflags
+    MT_ANIMAL|MT_CARNIVORE|MT_HOSTILE /*MT*/,               #mflagst - Monster Thoughts and behavior boolean bitflags
+	MB_ANIMAL|MB_LONGHEAD|MB_NOHANDS /*MB*/,                #mflagsb - Monster Body plan boolean bitflags
+    MG_INFRAVISIBLE|MG_TRACKER /*MG*/,                      #mflagsg - Monster Game mechanics and bookkeeping boolean bitflags
+	MA_ANIMAL /*MA*/,                                       #mflagsa - Monster rAce boolean bitflags
+    MV_NORMAL|MV_SCENT /*MV*/,                              #mflagsv - Monster Vision boolean bitflags
+    CLR_RED),                                               #mcolor
+=cut
+
+    my @m_res = $the_mon =~ 
+        /
+        MON \(          #Monster definition
+            ".*",           #Monster name, quoted string
+            S_(.*?),        #Symbol (always starts with S_)
+            (?:LVL|SIZ)\(   #Open LVL - Shelob's definition in SLASH'EM 0.0.7E7F3 incorrectly uses SIZ, so catch that too.
+                (.*?)           #This will be parsed by parse_level
+            \),             #Close LVL
+            \(?             #Open generation flags
+                (.*?)           #Combination of G_ flags (genocide, no_hell or hell, and an int for frequency)
+            \)?,            #Close generation
+            A\(             #Open attacks
+                (.*)            #Parsed by parse_attack
+            \),             #Close attacks
+            SIZ\(           #SIZ structure
+                (.*)            #Parsed by parse_size (dNetHack uses the 3.4.3 version)
+            \),             #Close SIZ
+            (.*?),          #Resistances OR'd together, or 0
+            (.*?),          #Granted resistances
+            (.*?),          #Flags - MM - Monster Motility boolean
+            (.*?),          #Flags - MT - Monster Thoughts and behavior
+            (.*?),          #Flags - MB - Monster Body plan
+            (.*?),          #Flags - MG - Monster Game mechanics and bookkeeping
+            (.*?),          #Flags - MA - Monster rAce
+            (.*?),          #Flags - MV - Monster Vision
+            (.*?)           #Color
+        \),$            #Close MON, anchor to end of string
+        /x;
+    #Unpack results
+    my ($sym,$lvl,$gen,$atk,$siz,$mr1,$mr2,$flg_mm,$flg_mt,$flg_mb,$flg_mg,$flg_ma,$flg_mv,$col) = @m_res;
+    
+    #use Data::Dumper;
+    #print Dumper(\@m_res);
+    #exit;
+
+    $col = "NO_COLOR" if ($name eq "ghost" || $name eq "shade");
+    my $mon_struct = {
+        NAME   => $name,
+        SYMBOL => $sym,
+        LEVEL  => parse_level($lvl),
+        TARGET => $target_ac,        #'Target' AC; monsters that typically start with armor have 10 base AC but lower target AC
+        GEN    => $gen,
+        ATK    => parse_attack($atk),
+        SIZE   => parse_size($siz),
+        MR1    => $mr1,
+        MR2    => $mr2,
+        FLGS   => "$flg_mm|$flg_mt|$flg_mb|$flg_mg|$flg_ma|$flg_mv",
+        COLOR  => $col,
+        REF    => $line,
+    };
+
+    # TODO: Automate this from the headers too. (colors.h)
+    $mon_struct->{COLOR}=~s/HI_DOMESTIC/CLR_WHITE/;
+    $mon_struct->{COLOR}=~s/HI_LORD/CLR_MAGENTA/;
+    $mon_struct->{COLOR}=~s/HI_OBJ/CLR_MAGENTA/;
+    $mon_struct->{COLOR}=~s/HI_METAL/CLR_CYAN/;
+    $mon_struct->{COLOR}=~s/HI_COPPER/CLR_YELLOW/;
+    $mon_struct->{COLOR}=~s/HI_SILVER/CLR_GRAY/;
+    $mon_struct->{COLOR}=~s/HI_GOLD/CLR_YELLOW/;
+    $mon_struct->{COLOR}=~s/HI_LEATHER/CLR_BROWN/;
+    $mon_struct->{COLOR}=~s/HI_CLOTH/CLR_BROWN/;
+    $mon_struct->{COLOR}=~s/HI_ORGANIC/CLR_BROWN/;
+    $mon_struct->{COLOR}=~s/HI_WOOD/CLR_BROWN/;
+    $mon_struct->{COLOR}=~s/HI_PAPER/CLR_WHITE/;
+    $mon_struct->{COLOR}=~s/HI_GLASS/CLR_BRIGHT_CYAN/;
+    $mon_struct->{COLOR}=~s/HI_MINERAL/CLR_GRAY/;
+    $mon_struct->{COLOR}=~s/DRAGON_SILVER/CLR_BRIGHT_CYAN/;
+    $mon_struct->{COLOR}=~s/HI_ZAP/CLR_BRIGHT_BLUE/;
+
+    push @monsters, $mon_struct;
+    #print STDERR "$mon_struct->{NAME} ($symbols{$mon_struct->{SYMBOL}}): $mon_struct->{LEVEL}->{LVL}\n";
+    $mon_count{$name}++;
+}
 
 # Parse a LVL() construct.
 sub parse_level {
-    my $lvl=shift;
+    my $lvl = shift;
     $lvl =~ s/MARM\((-?\d+),\s*-?\d+\)/$1/;
     my ($lv,$mov,$ac,$mr,$aln)=$lvl=~/(.*),(.*),(.*),(.*),(.*)/;
     my $l= {
@@ -368,6 +617,10 @@ sub parse_attack {
 }
 
 # Parse a SIZ() construct
+#dNetHack uses operators in the SIZ struct
+#e.g. SIZ((WT_HUMAN+WT_ELF)/2, ...)
+#or   SIZ(WT_MEDIUM*1.3334, ...)
+#and: SIZ(WT_LARGE*3/4, CN_LARGE/2, ...)
 sub parse_size {
     my $siz = shift;
     
@@ -375,15 +628,40 @@ sub parse_size {
     #which may be SIZEOF(struct), e.g. "sizeof(struct epri)" (Aligned Priest)
     #It's not relevant to this program, so skip it. Make it optional in the regex.
     
-    my ($wt, $nut, $snd, $sz) = $siz =~ /(.*),(.*),(?:.*,)?(.*),(.*)/;
+    my ($wt, $nut, $snd, $sz) = $siz =~ /([^,]*),([^,]*),(?:[^,]*,)?([^,]*),([^,]*)/;
+    $wt  = $permonst_flags->{$wt}  if defined $permonst_flags->{$wt};
+    $nut = $permonst_flags->{$nut} if defined $permonst_flags->{$nut};
+    
+    #FIXME: if wt or nut contain [+-/*()], do subs, call eval()
+    $wt = eval_wt_nut($wt) if $wt =~ /\D/;
+    $nut = eval_wt_nut($nut) if $nut =~ /\D/;
+    
     my $s = {
-        WT => $defined_weights{$wt} || $wt,
+        WT => $wt,
         NUT => $nut,
         SND => $snd,
         SIZ => $sizes{$sz},
     };
 
     return $s;
+}
+
+sub eval_wt_nut {
+    #Attempt to evaluate a wt or nut group that contains math expressions.
+    #e.g. WT_MEDIUM*1.3334 (deeper one) or (WT_HUMAN+WT_ELF)/2 (deminymph)
+    #This is done using eval. For safety, die if it doesn't look like numbers.
+    #(Just in case someone makes a monster of size "rm -rf /")
+    
+    my $size = shift;
+    for my $k (keys %$permonst_flags) {
+        my $val = $permonst_flags->{$k};
+        $size =~ s/$k/$val/;
+    }
+
+    die "SIZ() doesn't look like numbers" unless $size =~ /^[.0-9()+\/*-]+$/;
+    die "SIZ() looks unusually long" if length $size > 20;
+    
+    return int(eval "$size");
 }
 
 # The tag matching is slightly wrong, or at least outdated. "womBAT" was bringing up the bat entry, for example.
@@ -417,13 +695,13 @@ while (my $l = <$DBASE>) {
         push @$tags, $l;
     }
     else {
-        $entry.=$l."";    #Encyclopedia template automatically does the <br>.
+        $entry .= $l;    #Encyclopedia template automatically does the <br>.
     }
 }
 
 #FIXME need to set the line number each monster is found on
 # The main monst.c parser.
-open MONST, "<", "${nethome}/src/monst.c" or die "Couldn't open monst.c - $!";
+open my $MONST, "<", "${nethome}/src/monst.c" or die "Couldn't open monst.c - $!";
 my $sex_attack = "";
 my $having_sex = 0;
 my $curr_mon = 0;
@@ -431,13 +709,18 @@ my $the_mon;
 my $ref = undef;
 
 my ($l_brack, $r_brack) = (0, 0);
-while (my $l = <MONST>) {
+while (my $l = <$MONST>) {
     $ref = $. if !$ref; #Get the first line the monster is declared on
     chomp $l;
+    
+    #Remove comments.
+    $l =~ s|//.*$||;
+    #$l =~ s|/\*.*?\*/||g if $curr_mon; #Already done in parse_mon, and that's tested, so...
+    
     # Monsters are defined with MON() declarations
-    if ($l=~/^\s+MON/) {
-        $curr_mon=1;
-        $the_mon="";
+    if ($l =~ /^\s+MON/) {
+        $curr_mon = 1;
+        $the_mon = "";
     }
     # foocubi need special handling for their attack strings.
     #3.4.3 uses #ifdef seduce, then #defines SEDUCTION_ATTACKS. Replace "SEDUCTION_ATTACKS" with the defined values
@@ -468,7 +751,13 @@ while (my $l = <MONST>) {
         if (($l_brack - $r_brack) == 0)
         {
             $curr_mon = 0;
-            process_monster($the_mon, $ref);
+            #FIXME this should be a class or something to avoid these if chains
+            if ($dnethack) {
+                process_monster_dnethack($the_mon, $ref);
+            }
+            else {
+                process_monster($the_mon, $ref);
+            }
             $ref = undef;
         }
     }
@@ -538,6 +827,10 @@ EOF
             {
                 $atks .= "$attacks{$a->{AT}}$damage{$a->{AD}}, ";
             }
+            
+            #Track unknown attack types and damage types.
+            $unknowns{$a->{AT}} = $print_name if !defined $attacks{$a->{AT}};
+            $unknowns{$a->{AD}} = $print_name if !defined $damage{$a->{AD}};
         }
         $atks = substr($atks, 0, length($atks)-2);    #Quick fix for commas.
     }
@@ -560,11 +853,44 @@ EOF
 
     #Look for a magic attack. If found, add magic resistance.
     #Baby gray dragons also explicitly have magic resistance.
+    #For variants, consult mondata.c, resists_magm
     my $hasmagic = ($print_name eq "baby gray dragon");
     for my $a (@{$m->{ATK}})
     {
         $hasmagic = 1 if (($a->{AD} eq "AD_MAGM") || ($a->{AD} eq "AD_RBRE"));
+        
+        if ($dnethack) {
+            #Large list of explicitly immune mons
+            #Shimmering dragons have AD_RBRE but are NOT resistant
+            $hasmagic = 0 if $print_name eq "shimmering dragon";
+            
+            #Should probably find a better way to do this...
+            #Does this actually catch everything?
+            $hasmagic = 1 if $print_name =~ m/
+                 throne[ _-]archon
+                |light[ _-]archon
+                |surya[ _-]deva
+                |dancing[ _-]blade
+                |mahadeva
+                |tulani[ _-]eladrin
+                |ara[ _-]kamerel
+                |aurumach[ _-]rilmani
+                |watcher[ _-]in[ _-]the[ _-]water
+                |swarm[ _-]of[ _-]snaking[ _-]tentacles 
+                |long[ _-]sinuous[ _-]tentacle
+                |keto
+                |wide[ _-]clubbed[ _-]tentacle
+                |queen[ _-]of[ _-]stars
+                |eternal[ _-]light
+                |crow[ _-]winged[ _-]half[ _-]dragon
+                |daruth[ _-]xaxox
+            /x;
+        }
     }
+    
+    #Replace MR_ALL with each resistance.
+    $m->{MR1} =~ s/MR_ALL/MR_STONE\|MR_ACID\|MR_POISON\|MR_ELEC\|MR_DISINT\|MR_SLEEP\|MR_COLD\|MR_FIRE\|MR_DRAIN\|MR_SICK/ 
+            if $dnethack;
 
     # Same for resistances.
     my $resistances = "";
@@ -577,6 +903,8 @@ EOF
             {
                 next if ($mr =~ /MR_PLUS/ || $mr =~ /MR_HITAS/);  #SLASH'EM Hit As x/Need x to hit. They're not resistances.
                 push @resistances, $flags{$mr};
+                
+                $unknowns{$mr} = $print_name if !defined $flags{$mr};
             }
         }
 
@@ -584,6 +912,17 @@ EOF
         #Add it, unless they have an explicit MR_DRAIN tag (SLASH'EM only)
         push @resistances, "level drain" if ( ($m->{NAME} eq "Death" || $m->{FLGS} =~ /M2_DEMON/ || $m->{FLGS} =~ /M2_UNDEAD/ || $m->{FLGS} =~ /M2_WERE/)
                     && ($m->{MR1} !~ /MR_DRAIN/));
+        #
+        if ($dnethack) {
+            #dNetHack - angel and keter have explicit death resistance
+            #keter
+            push @resistances, "death magic" if ($m->{SYMBOL} eq 'KETER');
+            #is_angel - uses sym *_ANGEL, does not have MA_MINION flag
+            my $is_angel_sym = $m->{SYMBOL} eq 'LAW_ANGEL' || $m->{SYMBOL} eq 'NEU_ANGEL' || $m->{SYMBOL} eq 'CHA_ANGEL';
+            push @resistances, "death magic" if ($is_angel_sym && $m->{FLGS} !~ m/MA_MINION/);
+            
+            #MR_DEATH doesn't exist.
+        }
     }
     push @resistances, 'magic' if $hasmagic;
     $resistances = "None" if !@resistances;
@@ -591,21 +930,23 @@ EOF
     print $HTML " |resistances=$resistances\n";
 
     # Now output all the other flags of interest.
-    # Nethackwiki nicely supports templates that are equal. So all that's necessary is to strip and reformat the flags.
-    if (!($m->{FLGS} eq "0|0|0"))
+    # Nethackwiki nicely supports templates that are equivalent.
+    # So all that's necessary is to strip and reformat the flags.
     {
+        my $article = "A ";
         if ($m->{FLGS} =~ /M2_PNAME/)
         {
-            print $HTML " |attributes={{attributes|$m->{NAME}";
+            $article = '';
         }
         elsif ($m->{GEN} =~ /G_UNIQ/)
         {
-            print $HTML " |attributes={{attributes|The $m->{NAME}";
+            $article = 'The ';
         }
         else
         {
-            print $HTML " |attributes={{attributes|A $m->{NAME}";
+            $article = "A ";
         }
+        print $HTML " |attributes={{attributes|${article}$m->{NAME}";
 
         if ($m->{MR1} =~ /MR_(HITAS[A-Z]+)/)
         {
@@ -619,12 +960,16 @@ EOF
         {
             $m->{FLGS} .= "|nocorpse";
         }
+        
+        #TODO: Special flags for dNetHack?
+        #dNetHack specific attributes need to be added to the wiki templates.
 
         for my $mr (split /\|/, $m->{FLGS})
         {
             next if $mr eq "0";
 
-            $mr =~ s/M[1-3]_(.*)/$1/;
+            #Add MTBGAV for dNetHack. Restricting this at all is unnecessary...
+            $mr =~ s/M[1-3MTBGAV]_(.*)/$1/;
             print $HTML "|" . lc $mr . "=1";
         }
 
@@ -636,29 +981,41 @@ EOF
     print $HTML " |size=$m->{SIZE}->{SIZ}\n";
     print $HTML " |nutr=$m->{SIZE}->{NUT}\n";
     print $HTML " |weight=$m->{SIZE}->{WT}\n";
-    print $HTML " |reference=[[monst.c#line$m->{REF}]]" if !$slashem;
-    print $HTML " |reference=[[SLASH'EM_0.0.7E7F2/monst.c#line$m->{REF}]]" if $slashem;
+    if ($slashem) {
+        print $HTML " |reference=[[SLASH'EM_0.0.7E7F2/monst.c#line$m->{REF}]]";
+    }
+    elsif ($dnethack) {
+        #dnethack source code isn't on wiki.
+        #Link to github?
+        print $HTML " |reference=monst.c, line $m->{REF}";
+    }
+    else {
+        #Vanilla
+        print $HTML " |reference=[[monst.c#line$m->{REF}]]";
+    }
 
     #print Dumper(@entries), "\n";
 
     $entry = lookup_entry($m->{NAME});
-    print $HTML <<EOF;
-
-}}
-
-
-
-
-
+    print $HTML "\n}}\n\n\n\n\n\n";
+    if ($entry) {
+        print $HTML <<EOF;
 ==Encyclopedia Entry==
 
 {{encyclopedia|$entry}}
-{{stub|This page was automatically generated by a modified version of nhtohtml version $version}}
 EOF
+    }   #end $entry
+    print $HTML "\n{{stub|This page was automatically generated by a modified version of nhtohtml version $version}}\n";
+
     close $HTML;
     $last_html = $htmlname;
 }   #End main processing while loop.
 #(Should probably be broken up some more...
+
+if (scalar keys %unknowns) {
+    print "Flags and other constants that couldn't be resolved:\n";
+    print Dumper(\%unknowns);
+}
 
 # Handy subs follow...
 
@@ -675,7 +1032,8 @@ sub gen_conveyance
     my $m = shift;
     my $level = $m->{LEVEL}->{LVL};
     my %resistances;
-    my $stoning = $m->{FLGS} =~ /ACID/ || $m->{NAME} eq "lizard";
+    my $stoning = $m->{FLGS} =~ /ACID/i || $m->{NAME} =~ /lizard/i || $m->{NAME} eq 'mandrake';
+    #mandrake is dNetHack. Which also adds many new types of lizards
 
     for my $mr (split /\|/, $m->{MR2})
     {
@@ -705,6 +1063,8 @@ sub gen_conveyance
     $resistances{"causes [[teleportitis]]"} = int(($level * 100) / 10) > 100 ? 100 : int(($level * 100) / 10) if ($m->{FLGS} =~ /M1_TPORT/);
     $resistances{"[[teleport control]]"} = int(($level * 100) / 12) > 100 ? 100 : int(($level * 100) / 12) if ($m->{FLGS} =~ /M1_TPORT_CNTRL/);
 
+    $resistances{'displacement'} = 100 if $dnethack && $m->{NAME} eq 'shimmering dragon';
+    
     #Level 0 monsters cannot give intrinsics (0% chance). There don't seem to be any that affect this though, and no other way to get 0%
 
     #Insert a bunch of special cases. Some will clear %resistances.
@@ -728,6 +1088,7 @@ sub gen_conveyance
     #Might not hold true for variants...
     $gives_str = 1 if $m->{NAME} =~ /giant$/i;
     $gives_str = 1 if $m->{NAME} =~ /Lord Surtur|Cyclops/i;
+    $gives_str = 1 if $dnethack && $m->{NAME} =~ /gug/i;
     
     #3.6.0 - strength gain is treated as an intrinsic
     if ($gives_str && $base_nhver ge '3.6.0')
@@ -740,18 +1101,59 @@ sub gen_conveyance
         ++$count;
         $resistances{'Increase strength'} = 50 if $count == 1;
     }
-
+    
     my $ret = "";
-    foreach my $key (keys(%resistances))
-    {
-        $resistances{$key} = int($resistances{$key} / $count);
-        $ret .= "$key ($resistances{$key}\%), ";
+    if ($dnethack) {
+        #1. Remove the "/ $count" chance reduction. dNetHack removes that
+        #2. Fire, sleep, cold, shock, and acid are automatically granted
+        #2.a. but these have a duration: nutval * Multiplier
+        #2.b. where multiplier is 5/10/15/20/infinite
+        #2.c. Displacement does not use Multiplier... (it is temporary)
+        #3. So resistance should look something like:
+        #   Fire (25%) (100 turns)
+        #4. Other resistances are still permanent
+        foreach my $key (keys(%resistances))
+        {
+            my $chance = ' (' . int($resistances{$key}) . '%)';
+            my $duration = '';
+            
+            my $mult = 1;
+            if ($key =~ m/fire|sleep|cold|electricity|acid|displacement/)
+            {
+                #These resistances are always given
+                #but have a limited duration (possibly)
+                $chance = '' if $key ne 'displacement';
+                
+                #Round level up to next 5. Cap at 20.
+                $mult = 5 * (int(($level + 4) / 5));
+                $mult = 20 if $mult > 20;
+                $mult = 20 if $m->{GEN} =~ /G_UNIQ/;
+                
+                #Displacement ignores the multiplier (and permanent flag)
+                $mult = 1 if $key eq 'displacement';
+                
+                my $d = $m->{SIZE}->{NUT} * $mult;
+                $duration = " ($d turns)";
+                $duration = ' (permanently)' if $level > 14 && $m->{GEN} =~ /G_UNIQ/ && $key ne 'displacement';
+            }
+            
+            $resistances{$key} = $chance;
+            $ret .= "${key}${chance}${duration}, ";
+        }
+    }
+    else {
+        foreach my $key (keys(%resistances))
+        {
+            $resistances{$key} = int($resistances{$key} / $count);
+            $ret .= "$key ($resistances{$key}\%), ";
+        }
     }
     #NetHack 3.4.3 base - strength gain is guaranteed
     if ($gives_str && $base_nhver lt '3.6.0')
     {
         my $chance = 100;
         $chance = 25 if $slashem;       #SLASH'EM: flat 25% chance
+        #dnethack: 100% chance still
         $ret .= "Increase strength ($chance\%), ";
     }
     
@@ -760,7 +1162,7 @@ sub gen_conveyance
 
     #Add resistances that are not affected by chance, e.g. Lycanthopy. Actually, all of these do not allow normal intrinsic gaining.
     $ret = "Lycanthropy" if $m->{NAME} =~ /were/;
-    $ret = "[[Invisibility]], [[see invisible]] (if [[invisible]] when corpse is eaten), " if $m->{NAME} =~ /stalker/;
+    $ret = "[[Invisibility]], [[see invisible]] (if [[invisible]] when corpse is eaten), " if $m->{NAME} eq 'stalker';
 
     #Polymorph. Sandestins do not leave a corpse so I'm not mentioning it, although it does apply to digesters.
     $ret = "Causes [[polymorph]]" if ($m->{NAME} =~ /chameleon/ || $m->{NAME} =~ /doppelganger/ || $m->{NAME} =~ /genetic engineer/);
@@ -802,6 +1204,7 @@ sub lookup_entry {
     }
 }
 
+#May have changes in exper.c
 sub calc_exp
 {
     my $m = shift;
@@ -860,10 +1263,14 @@ sub calc_exp
     }
 
     #nasty
-    $tmp += (7 * $lvl) if ($m->{FLGS} =~ /M2_NASTY/);
+    $tmp += (7 * $lvl) if ($m->{FLGS} =~ /M._NASTY/);
     $tmp += 50 if ($lvl > 8);
 
     $tmp = 1 if $m->{NAME} eq "mail daemon";
+    
+    #dNetHack - Dungeon fern spores give no experience
+    $tmp = 0 if $m->{NAME} =~ m/dungeon fern spore|swamp fern spore|burning fern spore/;
+    $tmp = 0 if $m->{NAME} =~ m/tentacles?$/ || $m->{NAME} eq 'dancing blade';
 
     return int($tmp);
 }
@@ -942,4 +1349,52 @@ sub calc_difficulty
     }
     return(($lvl >= 0) ? int($lvl) : 0);
 
+}
+
+sub parse_permonst
+{
+    my $filename = shift;       #Full path.
+    die "Can't find permonst.h" unless -f $filename;
+    
+    open my $fh, "<", $filename or die "open failed - $!";
+    
+    my %defs;
+    for my $l (<$fh>)
+    {
+        chomp $l;
+        
+        #Assumption: no multi-line defines.
+        next unless $l =~ m/^#define\s+(\S+)\s+(.*)/;
+        
+        my $key = $1;
+        my $val = $2;
+        
+        #I doubt this will happen but if it does, it will break things elsewhere.
+        die "NATTK redefined! ($val)" if $key eq 'NATTK' && $val != 6;
+        
+        #All we care about for now.
+        #There are other defines like "VERY_SLOW" but they don't appear to be used.
+        next unless $key =~ m/^WT_|^CN_/;
+        
+        #Usually no comments, but make certain
+        $val =~ s|/\*.*?\*/||g;
+        $val =~ s/^\s+|\s+$//g;     #Trim spaces.
+        
+        #defined to an early value. Example:
+        # #define WT_DIMINUTIVE 10
+        # #define WT_ANT        WT_DIMINUTIVE
+        if (defined $defs{$val}) {
+            $val = $defs{$val};
+        }
+        
+        $defs{$key} = $val;
+    }
+    
+    #Hack - Vanilla NetHack stores WT_HUMAN in permonst,
+    #but ELF and DRAGON are on monst.c. Just hardcode those two...
+    $defs{WT_HUMAN}  = '1450' unless defined $defs{WT_HUMAN} ;
+    $defs{WT_ELF}    = '800'  unless defined $defs{WT_ELF}   ;
+    $defs{WT_DRAGON} = '4500' unless defined $defs{WT_DRAGON};
+    
+    return \%defs;
 }
