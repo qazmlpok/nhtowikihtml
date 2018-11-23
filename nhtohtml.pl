@@ -54,6 +54,7 @@ die "SLASHTHEM is not supported." if $nethome =~ /SlashTHEM/i;
 #Including the various SLASH'EM forks
 my $slashem = $nethome =~ /slashem/i;  #Modify the src reference
 my $dnethack = $nethome =~ /dnethack/i;
+my $unnethack = $nethome =~ /unnethack/i;
 
 if ($dnethack) {
     #Oops. dNetHack has built-in capability for printing wiki templates.
@@ -78,6 +79,7 @@ if ($nethome =~ /nethack-(\d\.\d\.\d)/) {
 
 $base_nhver = '3.4.3' if $slashem;      #Or any other variant.
 $base_nhver = '3.4.3' if $dnethack;     #Also based off 3.4.3
+$base_nhver = '3.4.3' if $unnethack;    #Also based off 3.4.3
 
 print "Using NetHack version $base_nhver\n\n" unless $slashem;
 print "Using SLASH'EM. Only 0.0.7E7F3 is really supported.\n\n" if $slashem;
@@ -105,11 +107,16 @@ my %flags = (
     G_UNIQ     =>      'generated only once',
     G_NOHELL   =>      'nohell',
     G_HELL     =>      'hell',
+
     G_NOGEN    =>      'generated only specially',
     G_SGROUP   =>      'appear in small groups normally',
     G_LGROUP   =>      'appear in large groups normally',
     G_GENO     =>      'can be genocided',
     G_NOCORPSE =>      'nocorpse',
+    
+    #UnNetHack
+    G_SHEOL    =>      'sheol',
+    G_NOSHEOL  =>      'nosheol',
     
     #SLASH'EM
     G_VLGROUP  =>      'appear in very large groups normally',
@@ -136,14 +143,16 @@ my %sizes = (
 my %frequencies = (
     '0'    => 'Not randomly generated',
     '1'    => 'Very rare',
-    '2'    => 'Rare',
-    '3'    => 'Uncommon',
-    '4'    => 'Common',
-    '5'    => 'Very common'
+    '2'    => 'Quite rare',
+    '3'    => 'Rare',
+    '4'    => 'Uncommon',
+    '5'    => 'Common',
+    '6'    => 'Very common',
+    '7'    => 'Prolific',
 );
 
 # We define the colors by hand. They're all rough guesses.
-my %colors= (
+my %colors = (
     CLR_BLACK =>"404040",
     CLR_RED => "880000",
     CLR_GREEN => "008800",
@@ -182,11 +191,9 @@ my %attacks = (
     AT_WEAP => "Weapon",
     AT_MAGC => "[[monster spell|Spell-casting]]"
 );
-
 my %slashem_attacks = (
     AT_MULTIPLY => "Multiply",
 );
-
 my %dnethack_attacks = (
     AT_ARRW	=> "Arrow",
     AT_WHIP	=> "Whip",
@@ -209,9 +216,12 @@ my %dnethack_attacks = (
     AT_MARI	=> "Multiarm Weapon",
     AT_MAGC	=> "Cast",
 );
-
+my %unnethack_attacks = (
+    AT_SCRE => "scream",        #Nazgul
+);
 %attacks = (%attacks, %slashem_attacks) if $slashem;
 %attacks = (%attacks, %dnethack_attacks) if $dnethack;
+%attacks = (%attacks, %unnethack_attacks) if $unnethack;
 
 my %damage = (
     AD_PHYS =>    "",    #Physical attack; nothing special about it
@@ -374,8 +384,20 @@ my %dnethack_damage = (
     # #AD_CURS   134,
     # AD_SQUE,
 );
+my %unnethack_damage = (
+    AD_LAVA  => ' [[fire]]',    #Current article just says "Fire". I see no special behavior, not even burning.
+    AD_LUCK  => ' steal [[luck]]',  #Evil eye
+    AD_FREZ  => ' [[freeze]]',  #Blue slime
+    AD_HEAD  => ' beheading',   #Vorpal jabberwock
+    AD_PUNI  => ' punish',      #Used by punisher. Includes ball&chain, but that's not it.
+    AD_LVLT  => ' [[level teleport]]',
+    AD_BLNK  => ' blink',       #Weeping angel. Adds 1d4 damage. ATTK shows 0d0
+    AD_SPOR  => ' produce spores',#release a spore if the player is nearby
+);
+
 %damage = (%damage, %dnethack_damage) if $dnethack;
 %damage = (%damage, %slashem_damage) if $slashem;
+%damage = (%damage, %unnethack_damage) if $unnethack;
 
 # Some monster names appear twice (were-creatures).  We use the
 # mon_count hash to keep track of them and flag cases where we need to
@@ -442,7 +464,7 @@ sub process_monster {
     #print Dumper(\@m_res);
     #exit;
 
-    die "monster parse error" unless $lvl;
+    die "monster parse error\n\n$the_mon" unless $lvl;
 
     $col = "NO_COLOR" if ($name eq "ghost" || $name eq "shade");
     my $mon_struct = {
@@ -588,13 +610,13 @@ sub process_monster_dnethack {
 sub parse_level {
     my $lvl = shift;
     $lvl =~ s/MARM\((-?\d+),\s*-?\d+\)/$1/;
-    my ($lv,$mov,$ac,$mr,$aln)=$lvl=~/(.*),(.*),(.*),(.*),(.*)/;
+    my ($lv,$mov,$ac,$mr,$aln) = $lvl =~ /(.*),(.*),(.*),(.*),(.*)/;
     my $l= {
         LVL => $lv,
         MOV => $mov,
         AC => $ac,
         MR => $mr,
-        ALN => $aln
+        ALN => $aln,
     };
     
     return $l;
@@ -609,7 +631,7 @@ sub parse_attack {
             AT => $1,
             AD => $2,
             N => $3,
-            D => $4
+            D => $4,
         };
         push @$astr, $a;
     }
@@ -631,8 +653,7 @@ sub parse_size {
     my ($wt, $nut, $snd, $sz) = $siz =~ /([^,]*),([^,]*),(?:[^,]*,)?([^,]*),([^,]*)/;
     $wt  = $permonst_flags->{$wt}  if defined $permonst_flags->{$wt};
     $nut = $permonst_flags->{$nut} if defined $permonst_flags->{$nut};
-    
-    #FIXME: if wt or nut contain [+-/*()], do subs, call eval()
+
     $wt = eval_wt_nut($wt) if $wt =~ /\D/;
     $nut = eval_wt_nut($nut) if $nut =~ /\D/;
     
@@ -699,8 +720,7 @@ while (my $l = <$DBASE>) {
     }
 }
 
-#FIXME need to set the line number each monster is found on
-# The main monst.c parser.
+
 open my $MONST, "<", "${nethome}/src/monst.c" or die "Couldn't open monst.c - $!";
 my $sex_attack = "";
 my $having_sex = 0;
@@ -725,21 +745,21 @@ while (my $l = <$MONST>) {
     # foocubi need special handling for their attack strings.
     #3.4.3 uses #ifdef seduce, then #defines SEDUCTION_ATTACKS. Replace "SEDUCTION_ATTACKS" with the defined values
     #3.6.0 defines SEDUCTION_ATTACKS_YES and SEDUCTION_ATTACKS_NO. _NO is not actually used.
-    if ($l=~/^\# ?define SEDUCTION_ATTACKS(?:_YES) /) {
-        $having_sex=1;
-        #print STDERR "Setting sex attacks\n";
+    if ($l =~ /^\# ?define SEDUCTION_ATTACKS(?:_YES)? / && !$sex_attack) {
+        $having_sex = 1;
+        # print "Setting sex attacks\n";
     }
     elsif ($having_sex) {
         $sex_attack .= $l;
         $sex_attack =~ s/\\//;
         $having_sex = 0 if (!($l =~ /\\/)); # If there's no backslash
                                          # continuation, then we're done.
-        # print STDERR "Sex: $sex_attack/;
+        # print "Sex: $sex_attack\n";
     }
     else {
         # Do the substitution if SED_ATK appears in $l.  We can count on
         # $sex_attack being properly defined.
-        $l =~ s/SEDUCTION_ATTACKS(?:_YES)/$sex_attack/;
+        $l =~ s/SEDUCTION_ATTACKS(?:_YES)?/$sex_attack/;
     }
     # Not re-setting r,l to 0 here seems to work better. Not sure why.
     if ($curr_mon) {
@@ -769,8 +789,7 @@ while (my $l = <$MONST>) {
 my $last_html = "";
 while (my $m = shift @monsters)
 {
-    # Name generation is due to issues like were-creatures with multiple
-    # entries.
+    # Name generation is due to issues like were-creatures with multiple entries.
     my ($htmlname, $print_name) = gen_names($m);
     if ($monsters[0])
     {
@@ -782,18 +801,24 @@ while (my $m = shift @monsters)
     open my $HTML, ">", "html/$htmlname" or die $!;
 
     my $genocidable = (index($m->{GEN}, "G_GENO") != -1 ? "Yes" : "No");
-    my $found = ($m->{GEN} =~ /([0-9])/);
+    my $found = ($m->{GEN} =~ /([0-7])/);
     my $frequency = $found ? $1 : '0';
+    
     $frequency = 0 if ($m->{GEN} =~ /G_NOGEN/);
-    $frequency = $frequencies{$frequency};
+    #This is duplicating the template. 
+    $frequency = "$frequency ($frequencies{$frequency})";
 
     #Apply the 'appears in x sized groups'. SGROUP, LGROUP, VLGROUP. VL is new to SLASH'EM.
+    #This is not done "normally", i.e. in the template. But I think this part is important.
     $frequency .= ", appears in small groups" if ($m->{GEN} =~ /G_SGROUP/);
     $frequency .= ", appears in large groups" if ($m->{GEN} =~ /G_LGROUP/);
     $frequency .= ", appears in very large groups" if ($m->{GEN} =~ /G_VLGROUP/);
 
-    $frequency .= ", appears only outside of [[Gehennom]]" if ($m->{GEN} =~ /G_NOHELL/);
-    $frequency .= ", appears only in [[Gehennom]]" if ($m->{GEN} =~ /G_HELL/);
+    #I was doing this instead of |hell or |nohell. Many vanilla articles don't have this.
+    #Should it be included?
+    #(If so, need to add "sheol" logic for UnNetHack)
+    #$frequency .= ", appears only outside of [[Gehennom]]" if ($m->{GEN} =~ /G_NOHELL/);
+    #$frequency .= ", appears only in [[Gehennom]]" if ($m->{GEN} =~ /G_HELL/);
     $frequency  = "Unique" if ($m->{GEN} =~ /G_UNIQ/);
 
     my $difficulty = &calc_difficulty($m);
@@ -832,7 +857,8 @@ EOF
             $unknowns{$a->{AT}} = $print_name if !defined $attacks{$a->{AT}};
             $unknowns{$a->{AD}} = $print_name if !defined $damage{$a->{AD}};
         }
-        $atks = substr($atks, 0, length($atks)-2);    #Quick fix for commas.
+        #Quick fix for commas.
+        $atks = substr($atks, 0, length($atks)-2) if $atks =~ m/, $/;
     }
 
     print $HTML "$atks\n";
@@ -961,6 +987,25 @@ EOF
             $m->{FLGS} .= "|nocorpse";
         }
         
+        #I was putting this in frequency. Which is better?
+        if ($m->{GEN} =~ /G_HELL/)
+        {
+            $m->{FLGS} .= "|hell";
+        }
+        if ($m->{GEN} =~ /G_NOHELL/)
+        {
+            $m->{FLGS} .= "|nohell";
+        }
+        #UnNetHack
+        if ($m->{GEN} =~ /G_SHEOL/)
+        {
+            $m->{FLGS} .= "|sheol";
+        }
+        if ($m->{GEN} =~ /G_NOSHEOL/)
+        {
+            $m->{FLGS} .= "|nosheol";
+        }
+        
         #TODO: Special flags for dNetHack?
         #dNetHack specific attributes need to be added to the wiki templates.
 
@@ -987,6 +1032,13 @@ EOF
     elsif ($dnethack) {
         #dnethack source code isn't on wiki.
         #Link to github?
+        print $HTML " |reference=monst.c, line $m->{REF}";
+    }
+    elsif ($unnethack) {
+        #There's a template that links to sourceforge, but only as a <ref>, which I don't want.
+        #print $HTML " |reference=https://github.com/UnNetHack/UnNetHack/blob/master/src/monst.c#$m->{REF}";
+        #print $HTML " |reference=http://sourceforge.net/p/unnethack/code/1986/tree/trunk/src/monst.c#$m->{REF}";
+        #ok I just need a {{src}} template...
         print $HTML " |reference=monst.c, line $m->{REF}";
     }
     else {
@@ -1153,23 +1205,25 @@ sub gen_conveyance
     {
         my $chance = 100;
         $chance = 25 if $slashem;       #SLASH'EM: flat 25% chance
-        #dnethack: 100% chance still
+        #dNetHack, UnNetHack: 100% still
         $ret .= "Increase strength ($chance\%), ";
     }
-    
-    #Quick fix for the comma issue: Delete the last two characters
-    $ret .= "Cures [[stoning]], " if $stoning;
 
     #Add resistances that are not affected by chance, e.g. Lycanthopy. Actually, all of these do not allow normal intrinsic gaining.
     $ret = "Lycanthropy" if $m->{NAME} =~ /were/;
     $ret = "[[Invisibility]], [[see invisible]] (if [[invisible]] when corpse is eaten), " if $m->{NAME} eq 'stalker';
 
+    $ret .= "Cures [[stoning]], " if $stoning;
+
+    #UnNetHack
+    $ret .= "Alters luck, " if $m->{NAME} eq 'evil eye';  #BUC dependent.
+    
     #Polymorph. Sandestins do not leave a corpse so I'm not mentioning it, although it does apply to digesters.
-    $ret = "Causes [[polymorph]]" if ($m->{NAME} =~ /chameleon/ || $m->{NAME} =~ /doppelganger/ || $m->{NAME} =~ /genetic engineer/);
+    $ret = "Causes [[polymorph]], " if ($m->{NAME} =~ /chameleon/ || $m->{NAME} =~ /doppelganger/ || $m->{NAME} =~ /genetic engineer/);
 
     return "None" if $ret eq "";
     
-    $ret = substr($ret, 0, length($ret)-2);
+    $ret = substr($ret, 0, length($ret)-2) if $ret =~ m/, $/;
 
     return $ret;
 }
@@ -1268,7 +1322,7 @@ sub calc_exp
 
     $tmp = 1 if $m->{NAME} eq "mail daemon";
     
-    #dNetHack - Dungeon fern spores give no experience
+    #dNetHack, UnNetHack - Dungeon fern spores give no experience
     $tmp = 0 if $m->{NAME} =~ m/dungeon fern spore|swamp fern spore|burning fern spore/;
     $tmp = 0 if $m->{NAME} =~ m/tentacles?$/ || $m->{NAME} eq 'dancing blade';
 
