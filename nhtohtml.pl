@@ -21,13 +21,19 @@
 # 2018/11/19 -  Update to support NetHack 3.6.0 and 3.6.1.
 #               Add support for "Increase strength" from giants
 #
+# 2018/11/24 - Updates to add UnNetHack, dNetHack (not really tested), 
+#   SLASHTHEM. SLASH'EM-Extended "works", but has no real support.
+#   Had to fix an issue with the parser: split doesn't count )
+#   if it appears at the end of the line.
+#   Updated parser to check for all #defines, not just seduction_attack.
+#   dNetHack and SLASHTHEM use 3 sets; Lilith exists and has different attacks
 
 use strict;
 use warnings;
 
 use Data::Dumper;
 
-my $rev = '$Revision: 1.95w $ ';
+my $rev = '$Revision: 2.03w $ ';
 my ($version) = $rev=~ /Revision:\s+(.*?)\s?\$/;
 
 print <<EOF;
@@ -41,13 +47,13 @@ EOF
 my $nethome = shift || "C:/temp/nethack-3.4.3";
 
 #for consistency; replace all \ with /.
-$nethome =~ s/\\/\//;
+$nethome =~ s/\\/\//g;
 
 die "Path does not exist: $nethome" unless -e $nethome;
 die "Path does not appear to be a NetHack source folder: $nethome" unless -e "$nethome/include/monsym.h";
 
 die "SLASHEM-Extended is not supported." if $nethome =~ /SLASHEM[-_ ]Extended/i;
-die "SLASHTHEM is not supported." if $nethome =~ /SlashTHEM/i;
+#~22,000 monsters. 90 missing AT/AD definitions. Probably some special eat.c behavior.
 
 #TODO: If other variants need special logic, add checks here
 #(I haven't kept up to date on variants)
@@ -55,6 +61,9 @@ die "SLASHTHEM is not supported." if $nethome =~ /SlashTHEM/i;
 my $slashem = $nethome =~ /slashem/i;  #Modify the src reference
 my $dnethack = $nethome =~ /dnethack/i;
 my $unnethack = $nethome =~ /unnethack/i;
+my $slashthem = $nethome =~ /SlashTHEM/i;
+my $slashem_extended = $nethome =~ /SLASHEM[-_ ]Extended/i;
+#Note - slashthem monster "tracker jacker" will report unknown M1_ACID usage. It was placed in resistances, instead of MR_ACID
 
 if ($dnethack) {
     #Oops. dNetHack has built-in capability for printing wiki templates.
@@ -68,7 +77,7 @@ if ($dnethack) {
 # - there's a bug in xp calculation for non-attacks that was fixed in 3.6.0
 # - in 3.6.0, Giants give strength as an instrinsic, meaning it reduces the chance of getting other intrinsics
 # - SLASH'EM just flat reduces the chance to 25%
-my $base_nhver = '3.6.1';       #Assume latest...
+my $base_nhver = '3.4.3';       #Assume 3.4.3, since most variants are based off that.
 
 if ($nethome =~ /nethack-(\d\.\d\.\d)/) {
     #This will catch 3.6.2 when it comes out, but any changes won't be reflected without a manual update.
@@ -219,9 +228,16 @@ my %dnethack_attacks = (
 my %unnethack_attacks = (
     AT_SCRE => "scream",        #Nazgul
 );
+my %slashthem_attacks = (
+    AT_SCRA  => 'scratch',
+    AT_LASH  => 'lash',
+    AT_TRAM  => 'trample',
+);
 %attacks = (%attacks, %slashem_attacks) if $slashem;
 %attacks = (%attacks, %dnethack_attacks) if $dnethack;
 %attacks = (%attacks, %unnethack_attacks) if $unnethack;
+
+%attacks = (%attacks, %slashem_attacks, %unnethack_attacks, %slashthem_attacks) if ($slashthem || $slashem_extended);
 
 my %damage = (
     AD_PHYS =>    "",    #Physical attack; nothing special about it
@@ -282,9 +298,10 @@ my %damage = (
 
 my %slashem_damage = (
     #SLASH'EM specific defines
-    AD_TCKL =>    " tickle",
-    AD_POLY =>    " [[polymorph]]",
-    AD_CALM =>    " calm",
+    AD_TCKL =>      " tickle",
+    AD_POLY =>      " [[polymorph]]",
+    AD_CALM =>      " calm",
+    0       =>      '',     #Used with AT_MULTIPLY
 );
 
 #These aren't matching up with the values in allmain!
@@ -382,7 +399,7 @@ my %dnethack_damage = (
     # 
     # #AD_SAMU   133,
     # #AD_CURS   134,
-    # AD_SQUE,
+    AD_SQUE  => ' [[covetous|quest-artifact-stealing]]',
 );
 my %unnethack_damage = (
     AD_LAVA  => ' [[fire]]',    #Current article just says "Fire". I see no special behavior, not even burning.
@@ -395,9 +412,19 @@ my %unnethack_damage = (
     AD_SPOR  => ' produce spores',#release a spore if the player is nearby
 );
 
+my %slashthem_damage = (
+    AD_LITE  => ' brighten room',
+    AD_DARK  => ' darken room',
+    AD_WTHR  => ' withers items',
+    AD_GLIB  => ' disarms you',
+    AD_NGRA  => ' removes engravings',
+);
+
 %damage = (%damage, %dnethack_damage) if $dnethack;
 %damage = (%damage, %slashem_damage) if $slashem;
 %damage = (%damage, %unnethack_damage) if $unnethack;
+
+%damage = (%damage, %slashem_damage, %unnethack_damage, %slashthem_damage) if ($slashthem || $slashem_extended);
 
 # Some monster names appear twice (were-creatures).  We use the
 # mon_count hash to keep track of them and flag cases where we need to
@@ -421,6 +448,9 @@ sub process_monster {
     $the_mon =~ s/\/\*.*?\*\///g;
     my $target_ac = $the_mon =~ /MARM\(-?\d+,\s*(-?\d+)\)/;
     $the_mon =~ s/MARM\((-?\d+),\s*-?\d+\)/$1/;
+    
+    #Skip the array terminator, which is nameless
+    return undef if $name eq '';
 
 =nh3.6.0
     MON("fox", S_DOG, LVL(0, 15, 7, 0, 0), (G_GENO | 1),
@@ -512,6 +542,9 @@ sub process_monster_dnethack {
     my $line = shift;
     my ($name) = $the_mon=~/\s+MON\("(.*?)",/;
 
+    #Skip the array terminator, which is nameless
+    return undef if $name eq '';
+    
     #Remove ALL spaces
     $the_mon =~ s/\s//g;
     $the_mon =~ s/\/\*.*?\*\///g;
@@ -532,11 +565,12 @@ sub process_monster_dnethack {
     CLR_RED),                                               #mcolor
 =cut
 
+    ##DarkOne has symbol 'MV_INFRAVISION|S_HUMAN', which can't be right...
     my @m_res = $the_mon =~ 
         /
         MON \(          #Monster definition
             ".*",           #Monster name, quoted string
-            S_(.*?),        #Symbol (always starts with S_)
+            (?:MV_INFRAVISION\|)?S_(.*?),        #Symbol (always starts with S_)
             (?:LVL|SIZ)\(   #Open LVL - Shelob's definition in SLASH'EM 0.0.7E7F3 incorrectly uses SIZ, so catch that too.
                 (.*?)           #This will be parsed by parse_level
             \),             #Close LVL
@@ -562,6 +596,8 @@ sub process_monster_dnethack {
         /x;
     #Unpack results
     my ($sym,$lvl,$gen,$atk,$siz,$mr1,$mr2,$flg_mm,$flg_mt,$flg_mb,$flg_mg,$flg_ma,$flg_mv,$col) = @m_res;
+    
+    die "monster parse error\n\n$the_mon" unless $lvl;
     
     #use Data::Dumper;
     #print Dumper(\@m_res);
@@ -673,9 +709,21 @@ sub eval_wt_nut {
     #This is done using eval. For safety, die if it doesn't look like numbers.
     #(Just in case someone makes a monster of size "rm -rf /")
     
+    #SLASHTHEM does "300+MZ_HUGE" for the bebelith. I don't know why.
+    my %defined_constants = (
+        MZ_TINY     => 0,
+        MZ_SMALL    => 1,
+        MZ_MEDIUM   => 2,
+        MZ_HUMAN    => 2,
+        MZ_LARGE    => 3,
+        MZ_HUGE     => 4,
+        MZ_GIGANTIC => 7,
+        %$permonst_flags,
+    );
+    
     my $size = shift;
-    for my $k (keys %$permonst_flags) {
-        my $val = $permonst_flags->{$k};
+    for my $k (keys %defined_constants) {
+        my $val = $defined_constants{$k};
         $size =~ s/$k/$val/;
     }
 
@@ -727,6 +775,16 @@ my $having_sex = 0;
 my $curr_mon = 0;
 my $the_mon;
 my $ref = undef;
+my $seen_a_mon = 0;
+my $is_deferred = 0;        #Track '#if 0'
+
+# #define statements after the first MON.
+#Typically SEDUCTION_ATTACKs
+#Note: Explicitly skip "#define M1_MARSUPIAL 0" or any other M*/G* flags
+#Skip anything that's already defined (i.e. SEDUCTION_ATTACKS). Use the first one seen.
+my %seen_defines;
+my $in_define;
+my $skip_this_define;
 
 my ($l_brack, $r_brack) = (0, 0);
 while (my $l = <$MONST>) {
@@ -734,38 +792,70 @@ while (my $l = <$MONST>) {
     chomp $l;
     
     #Remove comments.
+    $l =~ s|/\*.*?\*/||g if $seen_a_mon;
     $l =~ s|//.*$||;
-    #$l =~ s|/\*.*?\*/||g if $curr_mon; #Already done in parse_mon, and that's tested, so...
+    
+    #print "Read: $l\n";
+    
+    if ($l =~ m/^#if 0/)
+    {
+        $is_deferred = 1;
+    }
+    if ($is_deferred && $l =~ m/^#endif/)
+    {
+        $is_deferred = 0;
+    }
+    
+    #Any reason to keep them?
+    next if $is_deferred;
+    
+    if ($seen_a_mon && $l =~ m/^#\s*define\s+(\S+)(.*)$/)
+    {
+        #print "define: $l\n";
+        $in_define = $1;
+        $l = $2;
+        $skip_this_define = 1 if $in_define =~ m/^[MG]._/ || defined $seen_defines{$in_define};
+        $seen_defines{$in_define} = '' unless $skip_this_define;     #initialize.
+
+    }
+    if ($in_define)
+    {
+        $seen_defines{$in_define} .= $l unless $skip_this_define;
+
+        if (!($l =~ /\\$/)) {
+            #End of definition (no trailing backslash)
+            $in_define = undef;
+            $skip_this_define = 0;
+        }
+        else 
+        {
+            #Remove that trailing backslash
+            local $/ = '\\';
+            chomp $seen_defines{$in_define};
+        }
+        
+        #No matter what, skip to the next line.
+        next;
+    }
+    #This definition stuff is getting unwieldy.
+    $l = do_define_substitutions($l, \%seen_defines);
     
     # Monsters are defined with MON() declarations
     if ($l =~ /^\s+MON/) {
         $curr_mon = 1;
         $the_mon = "";
+        
+        $seen_a_mon = 1;
     }
-    # foocubi need special handling for their attack strings.
-    #3.4.3 uses #ifdef seduce, then #defines SEDUCTION_ATTACKS. Replace "SEDUCTION_ATTACKS" with the defined values
-    #3.6.0 defines SEDUCTION_ATTACKS_YES and SEDUCTION_ATTACKS_NO. _NO is not actually used.
-    if ($l =~ /^\# ?define SEDUCTION_ATTACKS(?:_YES)? / && !$sex_attack) {
-        $having_sex = 1;
-        # print "Setting sex attacks\n";
-    }
-    elsif ($having_sex) {
-        $sex_attack .= $l;
-        $sex_attack =~ s/\\//;
-        $having_sex = 0 if (!($l =~ /\\/)); # If there's no backslash
-                                         # continuation, then we're done.
-        # print "Sex: $sex_attack\n";
-    }
-    else {
-        # Do the substitution if SED_ATK appears in $l.  We can count on
-        # $sex_attack being properly defined.
-        $l =~ s/SEDUCTION_ATTACKS(?:_YES)?/$sex_attack/;
-    }
+
     # Not re-setting r,l to 0 here seems to work better. Not sure why.
     if ($curr_mon) {
         $the_mon .= $l;
-        $l_brack += scalar(split /\(/, $l)-1;
-        $r_brack += scalar(split /\)/, $l)-1;
+        
+        #Count instances of ( and ) in line. When equal, we've finished a mon statement.
+        #This will break if there is an opening MON on the same line as a closing ) for the last mon.
+        $l_brack += $l =~ tr/\(//;
+        $r_brack += $l =~ tr/\)//;
         # If left and right brackets balance, we're done reading a MON()
         # declaration. Process it.
         if (($l_brack - $r_brack) == 0)
@@ -1041,6 +1131,7 @@ EOF
         #ok I just need a {{src}} template...
         print $HTML " |reference=monst.c, line $m->{REF}";
     }
+    #TODO: SLASHTHEM
     else {
         #Vanilla
         print $HTML " |reference=[[monst.c#line$m->{REF}]]";
@@ -1129,18 +1220,23 @@ sub gen_conveyance
 
     my $count = scalar(keys(%resistances));
 
-    #TODO: Need to add +strength
+    #Strength from giants:
     #in 3.6.0+, the +strength is considered a proper resistance, and thus reduces the chance of other resistances (storm, fire, ice)
     #but at most 50%:   "if strength is the only candidate, give it 50% chance"
     #in SLASH'EM, it's only 25%
     
     my $gives_str = 0;
+    my $gain_level = $m->{NAME} =~ m/wraith/;
+    $gain_level = 1 if $m->{NAME} =~ m/turbo chicken|centaurtrice/i && $slashthem;
     
     #avoid "giant ant". Giants always end with "giant"
     #Might not hold true for variants...
     $gives_str = 1 if $m->{NAME} =~ /giant$/i;
     $gives_str = 1 if $m->{NAME} =~ /Lord Surtur|Cyclops/i;
     $gives_str = 1 if $dnethack && $m->{NAME} =~ /gug/i;
+    
+    #Special case
+    $gives_str = 1 if ($slashthem || $slashem_extended) && $m->{NAME} =~ /olog[_ -]hai[_ -]gorgon/i;
     
     #3.6.0 - strength gain is treated as an intrinsic
     if ($gives_str && $base_nhver ge '3.6.0')
@@ -1204,9 +1300,20 @@ sub gen_conveyance
     if ($gives_str && $base_nhver lt '3.6.0')
     {
         my $chance = 100;
-        $chance = 25 if $slashem;       #SLASH'EM: flat 25% chance
+        #SLASH'EM: flat 25% chance
+        $chance = 25 if $slashem || $slashthem || $slashem_extended;
+        
+        #This is unconditional.
+        $chance = 100 if ($slashthem || $slashem_extended) && $m->{NAME} =~ /olog[_ -]hai[_ -]gorgon/i;
         #dNetHack, UnNetHack: 100% still
         $ret .= "Increase strength ($chance\%), ";
+    }
+    if ($gain_level)
+    {
+        #SLASH'EM changes the mechanics (which slashthem inherits)
+        #But I don't think it's worth changing the description
+        #It's covered in the article.
+        $ret .= '[[Gain level]], ';
     }
 
     #Add resistances that are not affected by chance, e.g. Lycanthopy. Actually, all of these do not allow normal intrinsic gaining.
@@ -1217,6 +1324,11 @@ sub gen_conveyance
 
     #UnNetHack
     $ret .= "Alters luck, " if $m->{NAME} eq 'evil eye';  #BUC dependent.
+    
+    #SLASHTHEM adds charisma bonus
+    #nymph and gorgon are handled separately but appear to be identical.
+    #Hard coding in the 10%...
+    $ret .= "Increase charisma (10%), " if $m->{NAME} eq 'gorgon' || $m->{SYMBOL} eq 'NYMPH';
     
     #Polymorph. Sandestins do not leave a corpse so I'm not mentioning it, although it does apply to digesters.
     $ret = "Causes [[polymorph]], " if ($m->{NAME} =~ /chameleon/ || $m->{NAME} =~ /doppelganger/ || $m->{NAME} =~ /genetic engineer/);
@@ -1232,7 +1344,7 @@ sub gen_conveyance
 sub gen_names {
     my $m = shift;
     my $htmlname = "$m->{NAME}.txt";
-    $htmlname =~ s/\s/_/g;
+    $htmlname =~ s/[:!\s\\\/]/_/g;
     my $print_name = $m->{NAME};
     if ($mon_count{$m->{NAME}} > 1) {
         my $symbol = $m->{SYMBOL};
@@ -1451,4 +1563,27 @@ sub parse_permonst
     $defs{WT_DRAGON} = '4500' unless defined $defs{WT_DRAGON};
     
     return \%defs;
+}
+
+#Handle #define statements in monst.c
+#Specifically, replacing SEDUCTION_ATTACKS (or whatever) with the found definitions
+#
+sub do_define_substitutions
+{
+    my ($line, $definitions)  = @_;
+    
+    my @keys = keys %$definitions;
+    #Need to loop over them longest-first...
+    @keys = sort {length $b <=> length $a} @keys;
+    for my $def (@keys)
+    {
+        if ($line =~ m/\Q$def\E/)
+        {
+            #Perform replacement.
+            #print "SUB: '$def' TO $definitions->{$def}\n";
+            $line =~ s/\Q$def\E/$definitions->{$def}/g;
+        }
+    }
+    
+    return $line;
 }
