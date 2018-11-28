@@ -11,5 +11,10 @@ NetHack 3.4.3
 NetHack 3.6.0
 NetHack 3.6.1
 SLASH'EM 0.0.7E7F3
+dNetHack
+UnNetHack
+SLASHTHEM
 
 Other versions may work but have not been tested.
+
+Variant-specific behavior might not be accurately captured. I mostly only examined eat.c (cpostfx) and exper.c

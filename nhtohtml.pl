@@ -138,6 +138,11 @@ my %flags = (
 #Keeping them in a single hash, since they have different prefixes.
 my $permonst_flags = parse_permonst("$nethome/include/permonst.h");
 
+#The difficulty calculations uses inequalities against attack types,
+#e.g. "$tmp > AT_WEAP". This requires knowing the actual integer values
+#of each of the definitions.
+my ($atk_ints, $dmg_ints) = parse_monattk("$nethome/include/monattk.h");
+
 my %sizes = (
     MZ_TINY     =>      'Tiny',
     MZ_SMALL    =>      'Small',
@@ -1371,14 +1376,27 @@ sub lookup_entry {
 }
 
 #May have changes in exper.c
+#experience(mtmp, nk)
 sub calc_exp
 {
     my $m = shift;
     my $lvl = $m->{LEVEL}->{LVL};
+    
+    #Attack types used in inequality comparisons
+    #The comparisons are the same between variants (that I've noticed),
+    #but the attack types/values differ.
+    my $AT_BUTT = $atk_ints->{AT_BUTT};
+    my $AD_BLND = $dmg_ints->{AD_BLND};
+    my $AD_PHYS = $dmg_ints->{AD_PHYS};
 
     my $tmp = $lvl * $lvl + 1;
 
     #AC bonus
+    #Note - this uses find_mac, which takes armor into account
+    #and dNetHack does a ton of other stuff, e.g. fleeing giant turtles have -15 AC
+    #not all armor can be accounted for, but monsters should have a "target" AC
+    #e.g. Yendorian army has 10 base AC but gets assorted armor.
+    #Can I account for that?
     $tmp += (7 - $m->{LEVEL}->{AC}) if ($m->{LEVEL}->{AC} < 3);
     $tmp += (7 - $m->{LEVEL}->{AC}) if ($m->{LEVEL}->{AC} < 0);
 
@@ -1392,33 +1410,52 @@ sub calc_exp
         {
             $atks++;
 
-            #Attack type; 'tmp2 > AT_BUTT' means not none, claw, bite, kick, butt
-            $tmp += 10 if ($a->{AT} eq "AT_MAGC");
-            $tmp += 5 if ($a->{AT} eq "AT_WEAP");
-            $tmp += 3 if ($a->{AT} ne "AT_NONE" && $a->{AT} ne "AT_CLAW" && $a->{AT} ne "AT_BITE" && $a->{AT} ne "AT_KICK"
-            && $a->{AT} ne "AT_BUTT" && $a->{AT} ne "AT_WEAP" && $a->{AT} ne "AT_MAGC");
+            #For each "special" attack type give extra experience
+            my $atk_int = $atk_ints->{$a->{AT}} // die "atk lookup failed $m->{NAME} - $a->{AT}";
+            my $dmg_int = $dmg_ints->{$a->{AD}} // die "dmg lookup failed $m->{NAME} - $a->{AD}";
+            
+            if ($atk_int > $AT_BUTT) {
+                if ($a->{AT} eq "AT_MAGC") {
+                    $tmp += 10;
+                }
+                elsif ($dnethack && $a->{AT} eq "AT_MMGC") {
+                    #Extension of above if.
+                    $tmp += 10;
+                }
+                elsif ($a->{AT} eq "AT_WEAP") {
+                    $tmp += 5;
+                }
+                else {
+                    $tmp += 3;
+                }
+            }
 
             #Attack damage types; 'temp2 > AD_PHYS and < AD_BLND' means MAGM, FIRE, COLD, SLEE, DISN, ELEC, DRST, ACID (i.e. the dragon types)
-            if ($a->{AD} eq "AD_MAGM" || $a->{AD} eq "AD_FIRE" || $a->{AD} eq "AD_COLD" || $a->{AD} eq "AD_SLEE" || $a->{AD} eq "AD_DISN" ||
-                    $a->{AD} eq "AD_ELEC" || $a->{AD} eq "AD_DRST" || $a->{AD} eq "AD_ACID")
+            #Actually this probably doesn't change in variants. Oh well.
+            if ($dmg_int > $AD_PHYS && $dmg_int < $AD_BLND)
             {
                 $tmp += ($lvl * 2);
             }
-
-            elsif ($a->{AD} eq "AD_STON" || $a->{AD} eq "AD_SLIM" || $a->{AD} eq "AD_DRLI")
+            elsif ($a->{AD} =~ /AD_STON|AD_SLIM|AD_DRLI/)
             {
                 $tmp += 50;
             }
-            elsif ($tmp != 0)    #Bug in the original code; uses 'tmp' instead of 'tmp2'.
+            elsif ($base_nhver lt '3.6.0' && $tmp != 0)    
             {
+                #Bug in the original code; uses 'tmp' instead of 'tmp2'.
+                #I haven't noticed any variants fix this.
+                $tmp += $lvl;
+            }
+            elsif ($base_nhver ge '3.6.0' && $a->{AD} ne 'AD_PHYS') {
+                #NetHack 3.6.0 fixes this bug.
                 $tmp += $lvl;
             }
 
-            #Heavy damage
+            #Heavy damage bonus
             $tmp += $lvl if (($a->{N} * $a->{D}) > 23);
 
             #This is for base experience, so assume drownable.
-            $tmp += 1000 if ($a->{AD} eq "AD_WRAP" && ($m->{NAME} =~ /eel/ || $m->{NAME} eq "kraken"));
+            $tmp += 1000 if ($a->{AD} eq "AD_WRAP" && ($m->{SYMBOL} eq 'EEL'));
         }
 
     }
@@ -1441,7 +1478,7 @@ sub calc_exp
     return int($tmp);
 }
 
-
+#makedefs.c, mstrength(ptr)
 sub calc_difficulty
 {
     my $m = shift;
@@ -1451,14 +1488,23 @@ sub calc_difficulty
 
     $n++ if $m->{GEN} =~ /G_SGROUP/;
     $n+=2 if $m->{GEN} =~ /G_LGROUP/;
-    $n+=4 if $m->{GEN} =~ /G_VLGROUP/;
+    $n+=4 if $m->{GEN} =~ /G_VLGROUP/;      #SLASH'EM
 
 
-    my $rangedatk = 0;
+    my $has_ranged_atk = 0;
 
+    #For higher ac values
     $n++ if $m->{LEVEL}->{AC} < 4;
     $n++ if $m->{LEVEL}->{AC} < 0;
+    
+    if ($dnethack) {
+        #dnethack adds more ifs:
+        $n++ if $m->{LEVEL}->{AC} < -5;
+        $n++ if $m->{LEVEL}->{AC} < -10;
+        $n++ if $m->{LEVEL}->{AC} < -20;
+    }
 
+    #For very fast monsters
     $n++ if $m->{LEVEL}->{MOV} >= 18;
 
     #for each attack and "Special" attack
@@ -1466,40 +1512,55 @@ sub calc_difficulty
 
     my $temp = $n;
 
-    if (scalar(@{$m->{ATK}}))
-      {
-        for my $a (@{$m->{ATK}})
+    if (scalar(@{$m->{ATK}})) 
+    {
+        for my $a (@{$m->{ATK}}) 
         {
-          #Add one for each: Not passive attack, magic attack, Weapon attack if strong
-          $n++ if $a->{AT} ne 'AT_NONE';
-          $n++ if $a->{AT} eq 'AT_MAGC';
-          $n++ if ($a->{AT} eq 'AT_WEAP' && $m->{FLGS} =~ /M2_STRONG/);
+            #Add one for each: Not passive attack, magic attack, Weapon attack if strong
+            $n++ if $a->{AT}  ne 'AT_NONE';
+            $n++ if $a->{AT}  eq 'AT_MAGC';
+            $n++ if ($a->{AT} eq 'AT_WEAP' && $m->{FLGS} =~ /M2_STRONG/);
 
-          #Add: +2 for poisonous, were, stoning, drain life attacks
-          #    +1 for all other non-pure-physical attacks
-          #    +1 if the attack can potentially do at least 24 damage
-          if ($a->{AD} eq 'AD_DRLI' || $a->{AD} eq 'AD_STON' || $a->{AD} eq 'AD_WERE' ||
-                  $a->{AD} eq 'AD_DRST' || $a->{AD} eq 'AD_DRDX' || $a->{AD} eq 'AD_DRCO')
-          {
-              $n += 2;
-          }
-          else
-          {
-              $n++ if ($a->{AD} ne 'AD_PHYS' && $m->{NAME} ne "grid bug");
-          }
-          $n++ if (($a->{N} * $a->{D}) > 23);
+            #dNetHack extends the "magc" if with the following:
+            $n++ if $dnethack && $a->{AT} =~ m/AT_MMGC|AT_TUCH|AT_SHDW|AT_TNKR/;
 
-          #Set ranged attack
-          $rangedatk = 1 if ($a->{AT} eq 'AT_WEAP' || $a->{AT} eq 'AT_MAGC' || $a->{AT} eq 'AT_BREA' ||
-                  $a->{AT} eq 'AT_SPIT' || $a->{AT} eq 'AT_GAZE');
+
+
+            #Add: +2 for poisonous, were, stoning, drain life attacks
+            #    +1 for all other non-pure-physical attacks (except grid bugs)
+            #    +1 if the attack can potentially do at least 24 damage
+            if ($a->{AD} =~ m/AD_DRLI|AD_STON|AD_WERE|AD_DRST|AD_DRDX|AD_DRCO/)
+            {
+                $n += 2;
+            }
+            elsif ($dnethack && $a->{AD} =~ m/AD_SHDW|AD_STAR|AD_BLUD/)
+            {
+                #dnethack extends this '+= 2' block with these types.
+                $n += 2;
+            }
+            else
+            {
+                $n++ if ($a->{AD} ne 'AD_PHYS' && $m->{NAME} ne "grid bug");
+            }
+            $n++ if (($a->{N} * $a->{D}) > 23);
+
+            #Set ranged attack  (defined in ranged_attk)
+            #Automatically includes anything > AT_WEAP
+            $has_ranged_atk = 1 if (is_ranged_attk($a->{AT}));
         }
-      }
+    }
 
-    $n++ if $rangedatk;
+    #For ranged attacks
+    $n++ if $has_ranged_atk;
 
-    $n -= 2 if $m->{NAME} eq "leprechaun"; # This does not include lep wizards. Right?
+    #Exact string comparison (so, not leprechaun wizards)
+    $n -= 2 if $m->{NAME} eq "leprechaun";
+    
+    #dNetHack: "Hooloovoo spawn many dangerous enemies."
+    $n += 10 if $dnethack && $m->{NAME} eq "hooloovoo";
 
-    $n += 5 if ($m->{FLGS} =~ /M2_NASTY/ && $slashem);
+    #"tom's nasties"
+    $n += 5 if ($m->{FLGS} =~ /M2_NASTY/ && ($slashem || $slashthem || $slashem_extended));
 
     if ($n == 0)
     {
@@ -1514,7 +1575,23 @@ sub calc_difficulty
         $lvl += $n/3 + 1;
     }
     return(($lvl >= 0) ? int($lvl) : 0);
+}
 
+#I'm not seeing any differences between variants.
+#Actually, dNetHack uses a different version... in mondata.c
+#This governs behavior (monmove.c), but there's also a copy of mstrength that
+#uses this modified function, not the unmodified version in makedefs
+#I suspect that's not intentional...
+sub is_ranged_attk
+{
+    my $atk = shift;
+    
+    return 1 if $atk =~ m/AT_BREA|AT_SPIT|AT_GAZE/;
+    my $atk_int = $atk_ints->{$atk} // die "Unknown atk type $atk";
+    my $WEAP_int = $atk_ints->{AT_WEAP} // die "Unknown atk type AT_WEAP";
+    
+    return 1 if $atk_int >= $WEAP_int;
+    return 0;
 }
 
 sub parse_permonst
@@ -1563,6 +1640,90 @@ sub parse_permonst
     $defs{WT_DRAGON} = '4500' unless defined $defs{WT_DRAGON};
     
     return \%defs;
+}
+
+#This is just a copy of parse_permonst
+#TODO: make a generic "parse this file and return the #defs as a dict" sub.
+sub parse_monattk
+{
+    my $filename = shift;       #Full path.
+    die "Can't find permonst.h" unless -f $filename;
+    
+    open my $fh, "<", $filename or die "open failed - $!";
+    
+    my %defs;
+    my @ordered_keys;
+    for my $l (<$fh>)
+    {
+        chomp $l;
+        
+        #Assumption: no multi-line defines.
+        next unless $l =~ m/^#define\s+(\S+)\s+(.*)/;
+        
+        my $key = $1;
+        my $val = $2;
+
+        #All we care about.
+        next unless $key =~ m/^AT_|^AD_/;
+        
+        #Attacks typically have a comment saying what makes them special
+        #or who uses the attack/damage. This could be worth keeping...
+        #but for now, just cut it out.
+        $val =~ s|/\*.*?\*/||g;
+        $val =~ s|//.*$||;
+        $val =~ s/^\s+|\s+$//g;     #Trim spaces.
+        
+        #defined to an early value. Example:
+        #   #define WT_DIMINUTIVE 10
+        #   #define WT_ANT        WT_DIMINUTIVE
+        #dNetHack does this with attack types, plus eval:
+        #   #define AD_DUNSTAN	120
+        #   #define AD_IRIS		AD_DUNSTAN+1
+        if (defined $defs{$val}) {
+            $val = $defs{$val};
+        }
+        
+        $defs{$key} = $val;
+        push @ordered_keys, $key;       #Need original order.
+    }
+    
+    #Loop over all of the defines, in order
+    #Look for references to an earlier definition, and do subtitution
+    #This is easy because all references _should_ contain AD_/AT_
+    for my $key (@ordered_keys) {
+        my $val = $defs{$key};
+        next if $val =~ m/^[\d()-]+$/;    #Just digits.
+        
+        for my $innerkey (@ordered_keys) {
+            last if $innerkey eq $key;
+            my $innerval = $defs{$innerkey};
+
+            if ($val =~ m/\Q$innerkey\E/) {
+                $val =~ s/\Q$innerkey\E/$innerval/g;
+            }
+        }
+        if ($val !~ m/^[\d\s()-]+$/) {
+            #Evaluate + or whatever. Die if it looks scary.
+            die "'$val' doesn't look like an expression" unless $val =~ m/^[\d()+*\/-]+$/;
+            die "'$val' is too long" if length $val > 30;
+            
+            $val = eval($val);
+        }
+        
+        #Update.
+        $defs{$key} = $val;
+    }
+    
+
+    #Should've split this earlier, but at least I only need one substitution block...
+    my %attacks = map {$_ => $defs{$_}} grep {$_ =~ /^AT_/} keys %defs;
+    my %damages = map {$_ => $defs{$_}} grep {$_ =~ /^AD_/} keys %defs;
+    
+    #Placeholder. 0 is used sometimes. Other ints usually aren't.
+    $attacks{0} = 0;
+    $damages{0} = 0;
+
+    return \%attacks, \%damages;
 }
 
 #Handle #define statements in monst.c
