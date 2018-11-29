@@ -27,13 +27,20 @@
 #   if it appears at the end of the line.
 #   Updated parser to check for all #defines, not just seduction_attack.
 #   dNetHack and SLASHTHEM use 3 sets; Lilith exists and has different attacks
+# 2018/11/28 - Updates centered around exper and difficulty.
+#   These functions are closer to the originals and use > and < on ints
+#   where appropriate. This required parsing monattk to get the #defines.
+#   Also variant-based changes to these functions.
+#   Fixed special monsters (lv > 50) having absurd exp values
+#   Added monsters_by_exp. Still not sure it's 100% accurate
+#   but I think it's close.
 
 use strict;
 use warnings;
 
 use Data::Dumper;
 
-my $rev = '$Revision: 2.03w $ ';
+my $rev = '$Revision: 2.05w $ ';
 my ($version) = $rev=~ /Revision:\s+(.*?)\s?\$/;
 
 print <<EOF;
@@ -652,8 +659,21 @@ sub parse_level {
     my $lvl = shift;
     $lvl =~ s/MARM\((-?\d+),\s*-?\d+\)/$1/;
     my ($lv,$mov,$ac,$mr,$aln) = $lvl =~ /(.*),(.*),(.*),(.*),(.*)/;
+    
+    my $base_lv = $lv;
+    
+    #Special monsters with fixed level and hitdice.
+    #dNetHack, as far as I can tell from source, does not do the level adjustment
+    #(All other variants I looked at appear unchanged)
+    if ($lv > 49 && !$dnethack) {
+        #mtmp->mhpmax = mtmp->mhp = 2*(ptr->mlevel - 6);
+	    #mtmp->m_lev = mtmp->mhp / 4;	/* approximation */
+        $lv = int((2*($lv - 6)) / 4);
+    }
+    
     my $l= {
         LVL => $lv,
+        BASE_LVL => $base_lv,
         MOV => $mov,
         AC => $ac,
         MR => $mr,
@@ -878,47 +898,51 @@ while (my $l = <$MONST>) {
     }
 }
 
-`mkdir html` unless -e 'html';
-
-# For each monster, create the html.
-my $last_html = "";
-while (my $m = shift @monsters)
+#No parameters; just uses globals.
+sub output_monster_html
 {
-    # Name generation is due to issues like were-creatures with multiple entries.
-    my ($htmlname, $print_name) = gen_names($m);
-    if ($monsters[0])
+    `mkdir html` unless -e 'html';
+
+    # For each monster, create the html.
+    my $last_html = "";
+    for my $m (@monsters)
     {
-        my ($nexthtml, $foo) = gen_names($monsters[0]);
-    }
+        # Name generation is due to issues like were-creatures with multiple entries.
+        my ($htmlname, $print_name) = gen_names($m);
+        if ($monsters[0])
+        {
+            my ($nexthtml, $foo) = gen_names($monsters[0]);
+        }
 
-    print "HTML: $htmlname\n";
+        print "HTML: $htmlname\n";
 
-    open my $HTML, ">", "html/$htmlname" or die $!;
+        open my $HTML, ">", "html/$htmlname" or die $!;
 
-    my $genocidable = (index($m->{GEN}, "G_GENO") != -1 ? "Yes" : "No");
-    my $found = ($m->{GEN} =~ /([0-7])/);
-    my $frequency = $found ? $1 : '0';
-    
-    $frequency = 0 if ($m->{GEN} =~ /G_NOGEN/);
-    #This is duplicating the template. 
-    $frequency = "$frequency ($frequencies{$frequency})";
+        my $genocidable = (index($m->{GEN}, "G_GENO") != -1 ? "Yes" : "No");
+        my $found = ($m->{GEN} =~ /([0-7])/);
+        my $frequency = $found ? $1 : '0';
+        
+        $frequency = 0 if ($m->{GEN} =~ /G_NOGEN/);
+        #This is duplicating the template. 
+        $frequency = "$frequency ($frequencies{$frequency})";
 
-    #Apply the 'appears in x sized groups'. SGROUP, LGROUP, VLGROUP. VL is new to SLASH'EM.
-    #This is not done "normally", i.e. in the template. But I think this part is important.
-    $frequency .= ", appears in small groups" if ($m->{GEN} =~ /G_SGROUP/);
-    $frequency .= ", appears in large groups" if ($m->{GEN} =~ /G_LGROUP/);
-    $frequency .= ", appears in very large groups" if ($m->{GEN} =~ /G_VLGROUP/);
+        #Apply the 'appears in x sized groups'. SGROUP, LGROUP, VLGROUP. VL is new to SLASH'EM.
+        #This is not done "normally", i.e. in the template. But I think this part is important.
+        $frequency .= ", appears in small groups" if ($m->{GEN} =~ /G_SGROUP/);
+        $frequency .= ", appears in large groups" if ($m->{GEN} =~ /G_LGROUP/);
+        $frequency .= ", appears in very large groups" if ($m->{GEN} =~ /G_VLGROUP/);
 
-    #I was doing this instead of |hell or |nohell. Many vanilla articles don't have this.
-    #Should it be included?
-    #(If so, need to add "sheol" logic for UnNetHack)
-    #$frequency .= ", appears only outside of [[Gehennom]]" if ($m->{GEN} =~ /G_NOHELL/);
-    #$frequency .= ", appears only in [[Gehennom]]" if ($m->{GEN} =~ /G_HELL/);
-    $frequency  = "Unique" if ($m->{GEN} =~ /G_UNIQ/);
+        #I was doing this instead of |hell or |nohell. Many vanilla articles don't have this.
+        #Should it be included?
+        #(If so, need to add "sheol" logic for UnNetHack)
+        #$frequency .= ", appears only outside of [[Gehennom]]" if ($m->{GEN} =~ /G_NOHELL/);
+        #$frequency .= ", appears only in [[Gehennom]]" if ($m->{GEN} =~ /G_HELL/);
+        $frequency  = "Unique" if ($m->{GEN} =~ /G_UNIQ/);
 
-    my $difficulty = &calc_difficulty($m);
-    my $exp = &calc_exp($m);
-    print $HTML <<EOF;
+        my $difficulty = &calc_difficulty($m);
+        my $exp = &calc_exp($m);
+        
+        print $HTML <<EOF;
 {{ monster
  |name=$print_name
  |difficulty=$difficulty
@@ -931,234 +955,264 @@ while (my $m = shift @monsters)
  |frequency=$frequency
  |genocidable=$genocidable
 EOF
-    # If the monster has any attacks, produce an attack section.
-    my $atks = "";
+        # If the monster has any attacks, produce an attack section.
+        my $atks = "";
 
-    if (scalar(@{$m->{ATK}}))
-    {
-        $atks = " |attacks=";
-        for my $a (@{$m->{ATK}})
+        if (scalar(@{$m->{ATK}}))
         {
-            if ($a->{D} > 0)
+            $atks = " |attacks=";
+            for my $a (@{$m->{ATK}})
             {
-                $atks .= "$attacks{$a->{AT}} $a->{N}d$a->{D}$damage{$a->{AD}}, ";
-            }
-            else #Omit nd0 damage (not the same as 0dn)
-            {
-                $atks .= "$attacks{$a->{AT}}$damage{$a->{AD}}, ";
-            }
-            
-            #Track unknown attack types and damage types.
-            $unknowns{$a->{AT}} = $print_name if !defined $attacks{$a->{AT}};
-            $unknowns{$a->{AD}} = $print_name if !defined $damage{$a->{AD}};
-        }
-        #Quick fix for commas.
-        $atks = substr($atks, 0, length($atks)-2) if $atks =~ m/, $/;
-    }
-
-    print $HTML "$atks\n";
-
-    # If the monster has any conveyances from ingestion, produce a
-    # conveyances section.
-
-    if ($m->{GEN} =~ /G_NOCORPSE/)
-    {
-        print $HTML " |resistances conveyed=None\n";
-    }
-    else
-    {
-        print $HTML " |resistances conveyed=";
-        print $HTML &gen_conveyance($m);
-        print $HTML "\n";
-    }
-
-    #Look for a magic attack. If found, add magic resistance.
-    #Baby gray dragons also explicitly have magic resistance.
-    #For variants, consult mondata.c, resists_magm
-    my $hasmagic = ($print_name eq "baby gray dragon");
-    for my $a (@{$m->{ATK}})
-    {
-        $hasmagic = 1 if (($a->{AD} eq "AD_MAGM") || ($a->{AD} eq "AD_RBRE"));
-        
-        if ($dnethack) {
-            #Large list of explicitly immune mons
-            #Shimmering dragons have AD_RBRE but are NOT resistant
-            $hasmagic = 0 if $print_name eq "shimmering dragon";
-            
-            #Should probably find a better way to do this...
-            #Does this actually catch everything?
-            $hasmagic = 1 if $print_name =~ m/
-                 throne[ _-]archon
-                |light[ _-]archon
-                |surya[ _-]deva
-                |dancing[ _-]blade
-                |mahadeva
-                |tulani[ _-]eladrin
-                |ara[ _-]kamerel
-                |aurumach[ _-]rilmani
-                |watcher[ _-]in[ _-]the[ _-]water
-                |swarm[ _-]of[ _-]snaking[ _-]tentacles 
-                |long[ _-]sinuous[ _-]tentacle
-                |keto
-                |wide[ _-]clubbed[ _-]tentacle
-                |queen[ _-]of[ _-]stars
-                |eternal[ _-]light
-                |crow[ _-]winged[ _-]half[ _-]dragon
-                |daruth[ _-]xaxox
-            /x;
-        }
-    }
-    
-    #Replace MR_ALL with each resistance.
-    $m->{MR1} =~ s/MR_ALL/MR_STONE\|MR_ACID\|MR_POISON\|MR_ELEC\|MR_DISINT\|MR_SLEEP\|MR_COLD\|MR_FIRE\|MR_DRAIN\|MR_SICK/ 
-            if $dnethack;
-
-    # Same for resistances.
-    my $resistances = "";
-    my @resistances;
-    if ($m->{MR1} || $hasmagic)
-    {
-        if ($m->{MR1})
-        {
-            for my $mr (split /\|/, $m->{MR1})
-            {
-                next if ($mr =~ /MR_PLUS/ || $mr =~ /MR_HITAS/);  #SLASH'EM Hit As x/Need x to hit. They're not resistances.
-                push @resistances, $flags{$mr};
+                if ($a->{D} > 0)
+                {
+                    $atks .= "$attacks{$a->{AT}} $a->{N}d$a->{D}$damage{$a->{AD}}, ";
+                }
+                else #Omit nd0 damage (not the same as 0dn)
+                {
+                    $atks .= "$attacks{$a->{AT}}$damage{$a->{AD}}, ";
+                }
                 
-                $unknowns{$mr} = $print_name if !defined $flags{$mr};
+                #Track unknown attack types and damage types.
+                $unknowns{$a->{AT}} = $print_name if !defined $attacks{$a->{AT}};
+                $unknowns{$a->{AD}} = $print_name if !defined $damage{$a->{AD}};
             }
+            #Quick fix for commas.
+            $atks = substr($atks, 0, length($atks)-2) if $atks =~ m/, $/;
         }
 
-        #Death, Demons, Were-creatures, and the undead automatically have level drain resistance
-        #Add it, unless they have an explicit MR_DRAIN tag (SLASH'EM only)
-        push @resistances, "level drain" if ( ($m->{NAME} eq "Death" || $m->{FLGS} =~ /M2_DEMON/ || $m->{FLGS} =~ /M2_UNDEAD/ || $m->{FLGS} =~ /M2_WERE/)
-                    && ($m->{MR1} !~ /MR_DRAIN/));
-        #
-        if ($dnethack) {
-            #dNetHack - angel and keter have explicit death resistance
-            #keter
-            push @resistances, "death magic" if ($m->{SYMBOL} eq 'KETER');
-            #is_angel - uses sym *_ANGEL, does not have MA_MINION flag
-            my $is_angel_sym = $m->{SYMBOL} eq 'LAW_ANGEL' || $m->{SYMBOL} eq 'NEU_ANGEL' || $m->{SYMBOL} eq 'CHA_ANGEL';
-            push @resistances, "death magic" if ($is_angel_sym && $m->{FLGS} !~ m/MA_MINION/);
-            
-            #MR_DEATH doesn't exist.
-        }
-    }
-    push @resistances, 'magic' if $hasmagic;
-    $resistances = "None" if !@resistances;
-    $resistances = join ',', @resistances if @resistances;
-    print $HTML " |resistances=$resistances\n";
+        print $HTML "$atks\n";
 
-    # Now output all the other flags of interest.
-    # Nethackwiki nicely supports templates that are equivalent.
-    # So all that's necessary is to strip and reformat the flags.
-    {
-        my $article = "A ";
-        if ($m->{FLGS} =~ /M2_PNAME/)
+        # If the monster has any conveyances from ingestion, produce a
+        # conveyances section.
+
+        if ($m->{GEN} =~ /G_NOCORPSE/)
         {
-            $article = '';
-        }
-        elsif ($m->{GEN} =~ /G_UNIQ/)
-        {
-            $article = 'The ';
+            print $HTML " |resistances conveyed=None\n";
         }
         else
         {
-            $article = "A ";
+            print $HTML " |resistances conveyed=";
+            print $HTML &gen_conveyance($m);
+            print $HTML "\n";
         }
-        print $HTML " |attributes={{attributes|${article}$m->{NAME}";
 
-        if ($m->{MR1} =~ /MR_(HITAS[A-Z]+)/)
+        #Look for a magic attack. If found, add magic resistance.
+        #Baby gray dragons also explicitly have magic resistance.
+        #For variants, consult mondata.c, resists_magm
+        my $hasmagic = ($print_name eq "baby gray dragon");
+        for my $a (@{$m->{ATK}})
         {
-            $m->{FLGS} .= "|$1";
-        }
-        if ($m->{MR1} =~ /MR_(PLUS[A-Z]+)/)
-        {
-            $m->{FLGS} .= "|$1";
-        }
-        if ($m->{GEN} =~ /G_NOCORPSE/)
-        {
-            $m->{FLGS} .= "|nocorpse";
+            $hasmagic = 1 if (($a->{AD} eq "AD_MAGM") || ($a->{AD} eq "AD_RBRE"));
+            
+            if ($dnethack) {
+                #Large list of explicitly immune mons
+                #Shimmering dragons have AD_RBRE but are NOT resistant
+                $hasmagic = 0 if $print_name eq "shimmering dragon";
+                
+                #Should probably find a better way to do this...
+                #Does this actually catch everything?
+                $hasmagic = 1 if $print_name =~ m/
+                     throne[ _-]archon
+                    |light[ _-]archon
+                    |surya[ _-]deva
+                    |dancing[ _-]blade
+                    |mahadeva
+                    |tulani[ _-]eladrin
+                    |ara[ _-]kamerel
+                    |aurumach[ _-]rilmani
+                    |watcher[ _-]in[ _-]the[ _-]water
+                    |swarm[ _-]of[ _-]snaking[ _-]tentacles 
+                    |long[ _-]sinuous[ _-]tentacle
+                    |keto
+                    |wide[ _-]clubbed[ _-]tentacle
+                    |queen[ _-]of[ _-]stars
+                    |eternal[ _-]light
+                    |crow[ _-]winged[ _-]half[ _-]dragon
+                    |daruth[ _-]xaxox
+                /x;
+            }
         }
         
-        #I was putting this in frequency. Which is better?
-        if ($m->{GEN} =~ /G_HELL/)
+        #Replace MR_ALL with each resistance.
+        $m->{MR1} =~ s/MR_ALL/MR_STONE\|MR_ACID\|MR_POISON\|MR_ELEC\|MR_DISINT\|MR_SLEEP\|MR_COLD\|MR_FIRE\|MR_DRAIN\|MR_SICK/ 
+                if $dnethack;
+
+        # Same for resistances.
+        my $resistances = "";
+        my @resistances;
+        if ($m->{MR1} || $hasmagic)
         {
-            $m->{FLGS} .= "|hell";
+            if ($m->{MR1})
+            {
+                for my $mr (split /\|/, $m->{MR1})
+                {
+                    next if ($mr =~ /MR_PLUS/ || $mr =~ /MR_HITAS/);  #SLASH'EM Hit As x/Need x to hit. They're not resistances.
+                    push @resistances, $flags{$mr};
+                    
+                    $unknowns{$mr} = $print_name if !defined $flags{$mr};
+                }
+            }
+
+            #Death, Demons, Were-creatures, and the undead automatically have level drain resistance
+            #Add it, unless they have an explicit MR_DRAIN tag (SLASH'EM only)
+            push @resistances, "level drain" if ( ($m->{NAME} eq "Death" || $m->{FLGS} =~ /M2_DEMON/ || $m->{FLGS} =~ /M2_UNDEAD/ || $m->{FLGS} =~ /M2_WERE/)
+                        && ($m->{MR1} !~ /MR_DRAIN/));
+            #
+            if ($dnethack) {
+                #dNetHack - angel and keter have explicit death resistance
+                #keter
+                push @resistances, "death magic" if ($m->{SYMBOL} eq 'KETER');
+                #is_angel - uses sym *_ANGEL, does not have MA_MINION flag
+                my $is_angel_sym = $m->{SYMBOL} eq 'LAW_ANGEL' || $m->{SYMBOL} eq 'NEU_ANGEL' || $m->{SYMBOL} eq 'CHA_ANGEL';
+                push @resistances, "death magic" if ($is_angel_sym && $m->{FLGS} !~ m/MA_MINION/);
+                
+                #MR_DEATH doesn't exist.
+            }
         }
-        if ($m->{GEN} =~ /G_NOHELL/)
+        push @resistances, 'magic' if $hasmagic;
+        $resistances = "None" if !@resistances;
+        $resistances = join ',', @resistances if @resistances;
+        print $HTML " |resistances=$resistances\n";
+
+        # Now output all the other flags of interest.
+        # Nethackwiki nicely supports templates that are equivalent.
+        # So all that's necessary is to strip and reformat the flags.
         {
-            $m->{FLGS} .= "|nohell";
+            my $article = "A ";
+            if ($m->{FLGS} =~ /M2_PNAME/)
+            {
+                $article = '';
+            }
+            elsif ($m->{GEN} =~ /G_UNIQ/)
+            {
+                $article = 'The ';
+            }
+            else
+            {
+                $article = "A ";
+            }
+            print $HTML " |attributes={{attributes|${article}$m->{NAME}";
+
+            if ($m->{MR1} =~ /MR_(HITAS[A-Z]+)/)
+            {
+                $m->{FLGS} .= "|$1";
+            }
+            if ($m->{MR1} =~ /MR_(PLUS[A-Z]+)/)
+            {
+                $m->{FLGS} .= "|$1";
+            }
+            if ($m->{GEN} =~ /G_NOCORPSE/)
+            {
+                $m->{FLGS} .= "|nocorpse";
+            }
+            
+            #I was putting this in frequency. Which is better?
+            if ($m->{GEN} =~ /G_HELL/)
+            {
+                $m->{FLGS} .= "|hell";
+            }
+            if ($m->{GEN} =~ /G_NOHELL/)
+            {
+                $m->{FLGS} .= "|nohell";
+            }
+            #UnNetHack
+            if ($m->{GEN} =~ /G_SHEOL/)
+            {
+                $m->{FLGS} .= "|sheol";
+            }
+            if ($m->{GEN} =~ /G_NOSHEOL/)
+            {
+                $m->{FLGS} .= "|nosheol";
+            }
+            
+            #TODO: Special flags for dNetHack?
+            #dNetHack specific attributes need to be added to the wiki templates.
+
+            for my $mr (split /\|/, $m->{FLGS})
+            {
+                next if $mr eq "0";
+
+                #Add MTBGAV for dNetHack. Restricting this at all is unnecessary...
+                $mr =~ s/M[1-3MTBGAV]_(.*)/$1/;
+                print $HTML "|" . lc $mr . "=1";
+            }
+
+            print $HTML "}}\n";
         }
-        #UnNetHack
-        if ($m->{GEN} =~ /G_SHEOL/)
-        {
-            $m->{FLGS} .= "|sheol";
+
+        #I think $entry will always be defined. Everything seems to have one.
+        #Could use a better stub message...
+        print $HTML " |size=$m->{SIZE}->{SIZ}\n";
+        print $HTML " |nutr=$m->{SIZE}->{NUT}\n";
+        print $HTML " |weight=$m->{SIZE}->{WT}\n";
+        if ($slashem) {
+            print $HTML " |reference=[[SLASH'EM_0.0.7E7F2/monst.c#line$m->{REF}]]";
         }
-        if ($m->{GEN} =~ /G_NOSHEOL/)
-        {
-            $m->{FLGS} .= "|nosheol";
+        elsif ($dnethack) {
+            #dnethack source code isn't on wiki.
+            #Link to github?
+            print $HTML " |reference=monst.c, line $m->{REF}";
         }
-        
-        #TODO: Special flags for dNetHack?
-        #dNetHack specific attributes need to be added to the wiki templates.
-
-        for my $mr (split /\|/, $m->{FLGS})
-        {
-            next if $mr eq "0";
-
-            #Add MTBGAV for dNetHack. Restricting this at all is unnecessary...
-            $mr =~ s/M[1-3MTBGAV]_(.*)/$1/;
-            print $HTML "|" . lc $mr . "=1";
+        elsif ($unnethack) {
+            #There's a template that links to sourceforge, but only as a <ref>, which I don't want.
+            #print $HTML " |reference=https://github.com/UnNetHack/UnNetHack/blob/master/src/monst.c#$m->{REF}";
+            #print $HTML " |reference=http://sourceforge.net/p/unnethack/code/1986/tree/trunk/src/monst.c#$m->{REF}";
+            #ok I just need a {{src}} template...
+            print $HTML " |reference=monst.c, line $m->{REF}";
+        }
+        #TODO: SLASHTHEM
+        else {
+            #Vanilla
+            print $HTML " |reference=[[monst.c#line$m->{REF}]]";
         }
 
-        print $HTML "}}\n";
-    }
+        #print Dumper(@entries), "\n";
 
-    #I think $entry will always be defined. Everything seems to have one.
-    #Could use a better stub message...
-    print $HTML " |size=$m->{SIZE}->{SIZ}\n";
-    print $HTML " |nutr=$m->{SIZE}->{NUT}\n";
-    print $HTML " |weight=$m->{SIZE}->{WT}\n";
-    if ($slashem) {
-        print $HTML " |reference=[[SLASH'EM_0.0.7E7F2/monst.c#line$m->{REF}]]";
-    }
-    elsif ($dnethack) {
-        #dnethack source code isn't on wiki.
-        #Link to github?
-        print $HTML " |reference=monst.c, line $m->{REF}";
-    }
-    elsif ($unnethack) {
-        #There's a template that links to sourceforge, but only as a <ref>, which I don't want.
-        #print $HTML " |reference=https://github.com/UnNetHack/UnNetHack/blob/master/src/monst.c#$m->{REF}";
-        #print $HTML " |reference=http://sourceforge.net/p/unnethack/code/1986/tree/trunk/src/monst.c#$m->{REF}";
-        #ok I just need a {{src}} template...
-        print $HTML " |reference=monst.c, line $m->{REF}";
-    }
-    #TODO: SLASHTHEM
-    else {
-        #Vanilla
-        print $HTML " |reference=[[monst.c#line$m->{REF}]]";
-    }
+        $entry = lookup_entry($m->{NAME});
+        print $HTML "\n}}\n\n\n\n\n\n";
+        if ($entry) {
+            print $HTML "\n==Encyclopedia Entry==\n\n\n{{encyclopedia|$entry}}\n";
+        }
+        print $HTML "\n{{stub|This page was automatically generated by a modified version of nhtohtml version $version}}\n";
 
-    #print Dumper(@entries), "\n";
+        close $HTML;
+        $last_html = $htmlname;
+    }   #End main processing while loop.
+    #(Should probably be broken up some more...
+}
+#End output_monster_html
 
-    $entry = lookup_entry($m->{NAME});
-    print $HTML "\n}}\n\n\n\n\n\n";
-    if ($entry) {
-        print $HTML <<EOF;
-==Encyclopedia Entry==
+#No parameters; just uses globals.
+sub output_monsters_by_exp
+{
+    my $header = <<HEADER;
+{| class="prettytable sortable striped" style="border:none; margin:0; padding:0; width: 22em;"
+|-
+! Name !! Experience !! Difficulty
+HEADER
+    my $footer = '|}';
+    my @sorted_mons = sort {$b->{EXP} <=> $a->{EXP} || $b->{DIFF} <=> $a->{DIFF}} @monsters;
 
-{{encyclopedia|$entry}}
-EOF
-    }   #end $entry
-    print $HTML "\n{{stub|This page was automatically generated by a modified version of nhtohtml version $version}}\n";
+    print "Writing: monsters_by_exp.txt\n";
+    
+    open my $HTML, ">", "monsters_by_exp.txt" or die $!;
+    
+    print $HTML $header;
+    
+    for my $m (@sorted_mons)
+    {
+        #Some entries need to be skipped.
+        my $row = "|-\n| [[$m->{NAME}]] || $m->{EXP} || $m->{DIFF}\n";
+        print $HTML $row;
+    }
+    
+    print $HTML $footer;
 
     close $HTML;
-    $last_html = $htmlname;
-}   #End main processing while loop.
-#(Should probably be broken up some more...
+}
+
+output_monster_html();
+output_monsters_by_exp();
 
 if (scalar keys %unknowns) {
     print "Flags and other constants that couldn't be resolved:\n";
@@ -1475,6 +1529,9 @@ sub calc_exp
     $tmp = 0 if $m->{NAME} =~ m/dungeon fern spore|swamp fern spore|burning fern spore/;
     $tmp = 0 if $m->{NAME} =~ m/tentacles?$/ || $m->{NAME} eq 'dancing blade';
 
+    #Store in hash
+    $m->{EXP} = int($tmp);
+    
     return int($tmp);
 }
 
@@ -1484,7 +1541,10 @@ sub calc_difficulty
     my $m = shift;
     my $lvl = $m->{LEVEL}->{LVL};
     my $n = 0;
-    $lvl = (2*($lvl - 6) / 4) if ($lvl > 49);
+    #done in parse_level
+    #$lvl = (2*($lvl - 6) / 4) if ($lvl > 49);
+    #...except for dNetHack
+    $lvl = (2*($lvl - 6) / 4) if ($dnethack && $lvl > 49);
 
     $n++ if $m->{GEN} =~ /G_SGROUP/;
     $n+=2 if $m->{GEN} =~ /G_LGROUP/;
@@ -1574,7 +1634,12 @@ sub calc_difficulty
     {
         $lvl += $n/3 + 1;
     }
-    return(($lvl >= 0) ? int($lvl) : 0);
+    
+    #Store in hash
+    my $final = (($lvl >= 0) ? int($lvl) : 0);
+    $m->{DIFF} = $final;
+    
+    return $final;
 }
 
 #I'm not seeing any differences between variants.
