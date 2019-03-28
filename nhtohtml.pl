@@ -922,9 +922,9 @@ sub output_monster_html
         my $found = ($m->{GEN} =~ /([0-7])/);
         my $frequency = $found ? $1 : '0';
         
-        $frequency = 0 if ($m->{GEN} =~ /G_NOGEN/);
-        #This is duplicating the template. 
-        $frequency = "$frequency ($frequencies{$frequency})";
+        $frequency = '0' if ($m->{GEN} =~ /G_NOGEN/);
+        #This is duplicating the template. Why was this necessary?
+        #$frequency = "$frequency ($frequencies{$frequency})";
 
         #Apply the 'appears in x sized groups'. SGROUP, LGROUP, VLGROUP. VL is new to SLASH'EM.
         #This is not done "normally", i.e. in the template. But I think this part is important.
@@ -985,7 +985,7 @@ EOF
         # If the monster has any conveyances from ingestion, produce a
         # conveyances section.
 
-        if ($m->{GEN} =~ /G_NOCORPSE/)
+        if ($m->{GEN} =~ /G_NOCORPSE/ && !IsPudding($print_name))
         {
             print $HTML " |resistances conveyed=None\n";
         }
@@ -1181,6 +1181,21 @@ EOF
     #(Should probably be broken up some more...
 }
 #End output_monster_html
+
+#Basically an if chain. Used to determine if a monster leaves a glob instead of a corpse.
+#This is hardcoded into the code, with 4 entries in a switch statement (mon.c, line 413 in 3.6.1, function make_corpse)
+#There's also a #define for "is this object a pudding?" 
+sub IsPudding
+{
+    my $name = shift;
+    
+    return 1 if $name eq 'gray ooze';
+    return 1 if $name eq 'brown pudding';
+    return 1 if $name eq 'green slime';
+    return 1 if $name eq 'black pudding';
+    
+    return 0;
+}
 
 #No parameters; just uses globals.
 sub output_monsters_by_exp
