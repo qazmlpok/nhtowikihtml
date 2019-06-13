@@ -18,6 +18,9 @@
 # Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 
 #
+# 2019/06/13 -  Update to support NetHack 3.6.2
+#               The difficulty is now part of the monst array
+#
 # 2018/11/19 -  Update to support NetHack 3.6.0 and 3.6.1.
 #               Add support for "Increase strength" from giants
 #
@@ -54,7 +57,10 @@ EOF
 my $nethome = shift || "C:/temp/nethack-3.4.3";
 
 #for consistency; replace all \ with /.
-$nethome =~ s/\\/\//g;
+$nethome =~ s|\\|/|g;
+
+#Strip "src" off if included.
+$nethome =~ s|/src/?$||;
 
 die "Path does not exist: $nethome" unless -e $nethome;
 die "Path does not appear to be a NetHack source folder: $nethome" unless -e "$nethome/include/monsym.h";
@@ -473,6 +479,15 @@ sub process_monster {
         M3_INFRAVISIBLE,                            #mflags3
         CLR_RED),                                   #mcolor
 =cut
+#3.6.2 adds difficulty to the end, right before color
+=nh3.6.2
+    MON("fox", S_DOG, LVL(0, 15, 7, 0, 0), (G_GENO | 1),
+        A(ATTK(AT_BITE, AD_PHYS, 1, 3), NO_ATTK, NO_ATTK, NO_ATTK, NO_ATTK, NO_ATTK),
+        SIZ(300, 250, MS_BARK, MZ_SMALL), 0, 0,
+        M1_ANIMAL | M1_NOHANDS | M1_CARNIVORE, M2_HOSTILE, M3_INFRAVISIBLE,
+        1,                                          #Difficulty
+        CLR_RED),                                   #mcolor
+=cut
 
     my @m_res = $the_mon =~ 
         /
@@ -496,11 +511,12 @@ sub process_monster {
             (.*?),          #Flags 1 (M1_, OR'd together)
             (.*?),          #Flags 2 (M2_, OR'd together)
             (.*?),          #Flags 3
+            (?:(\d+),)?     #Difficulty (3.6.2+)
             (.*?)           #Color
         \),$            #Close MON, anchor to end of string
         /x;
     #Unpack results
-    my ($sym,$lvl,$gen,$atk,$siz,$mr1,$mr2,$flg1,$flg2,$flg3,$col) = @m_res;
+    my ($sym,$lvl,$gen,$atk,$siz,$mr1,$mr2,$flg1,$flg2,$flg3,$diff,$col) = @m_res;
     
     #use Data::Dumper;
     #print Dumper(\@m_res);
@@ -522,6 +538,7 @@ sub process_monster {
         FLGS   => "$flg1|$flg2|$flg3",
         COLOR  => $col,
         REF    => $line,
+        MONS_DIFF => $diff,     #3.6.2 only
     };
 
     # TODO: Automate this from the headers too.
@@ -940,6 +957,16 @@ sub output_monster_html
         $frequency  = "Unique" if ($m->{GEN} =~ /G_UNIQ/);
 
         my $difficulty = &calc_difficulty($m);
+        if ($base_nhver ge '3.6.2') {
+            #Difficulty is now part of the monst array. However, continue to calculate the "old" difficulty.
+            #Print a message if there are any discrepancies.
+            #mstrength no longer exists, so the "computed" difficulty uses 3.6.1 rules.
+            my $comp_diff = $difficulty;
+            $difficulty = $m->{MONS_DIFF};
+            
+            print "\tDifficulty change: $print_name set to $difficulty, calculated $comp_diff\n" if $comp_diff != $difficulty;
+        }
+        
         my $exp = &calc_exp($m);
         
         print $HTML <<EOF;
@@ -1551,6 +1578,7 @@ sub calc_exp
 }
 
 #makedefs.c, mstrength(ptr)
+#No longer used as of 3.6.2, but still calculated.
 sub calc_difficulty
 {
     my $m = shift;
