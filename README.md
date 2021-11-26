@@ -7,13 +7,13 @@ The script was modified to generated mediawiki templates (specifically for use o
 The output relies on the existance of the templates 'monster', 'attributes', and 'encyclopedia'. The output is not very useful by itself.
 
 # Supported NetHack versions and variants
-NetHack 3.4.3
-NetHack 3.6.0
-NetHack 3.6.1
-SLASH'EM 0.0.7E7F3
-dNetHack
-UnNetHack
-SLASHTHEM
+- NetHack 3.4.3
+- NetHack 3.6.x
+- NetHack 3.7.0 (pre-release, as of 11/26/2021, basic support for the MON changes)
+- SLASH'EM 0.0.7E7F3
+- dNetHack
+- UnNetHack
+- SLASHTHEM
 
 Other versions may work but have not been tested.
 

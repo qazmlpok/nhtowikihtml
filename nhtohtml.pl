@@ -41,10 +41,14 @@
 use strict;
 use warnings;
 
+use Getopt::Long;
+use File::Spec;
+
 use Data::Dumper;
 
-my $rev = '$Revision: 2.05w $ ';
+my $rev = '$Revision: 2.06w $ ';
 my ($version) = $rev=~ /Revision:\s+(.*?)\s?\$/;
+my $force_version;
 
 print <<EOF;
 nhtohtml.pl version $version, Copyright (C) 2004 Robert Sim
@@ -52,6 +56,12 @@ This program comes with ABSOLUTELY NO WARRANTY. This is free software,
 and you are welcome to redistribute it under certain conditions.
 
 EOF
+
+#Git clone in particular won't include the version number in the dir.
+#Consider reading from README instead. I don't think that's viable for any variants, however.
+GetOptions('version|v=s' => \$force_version,);
+die "--version argument should be in the form 'x.x.x', corresponding to the base NetHack version (got $force_version)" 
+    if $force_version && $force_version !~ /^\d+\.\d+\.\d+$/;
 
 #my $nethome = "C:/temp/slashem-0.0.7E7F3/";
 my $nethome = shift || "C:/temp/nethack-3.4.3";
@@ -63,7 +73,7 @@ $nethome =~ s|\\|/|g;
 $nethome =~ s|/src/?$||;
 
 die "Path does not exist: $nethome" unless -e $nethome;
-die "Path does not appear to be a NetHack source folder: $nethome" unless -e "$nethome/include/monsym.h";
+die "Path does not appear to be a NetHack source folder: $nethome" unless -e "$nethome/include/monst.h";
 
 die "SLASHEM-Extended is not supported." if $nethome =~ /SLASHEM[-_ ]Extended/i;
 #~22,000 monsters. 90 missing AT/AD definitions. Probably some special eat.c behavior.
@@ -90,9 +100,10 @@ if ($dnethack) {
 # - there's a bug in xp calculation for non-attacks that was fixed in 3.6.0
 # - in 3.6.0, Giants give strength as an instrinsic, meaning it reduces the chance of getting other intrinsics
 # - SLASH'EM just flat reduces the chance to 25%
+# - 3.7.0 changes the file that contains all monst data and adds a variant to the MON define.
 my $base_nhver = '3.4.3';       #Assume 3.4.3, since most variants are based off that.
 
-if ($nethome =~ /nethack-(\d\.\d\.\d)/) {
+if ($nethome =~ /nethack-(\d+\.\d+\.\d+)/i) {
     #This will catch 3.6.2 when it comes out, but any changes won't be reflected without a manual update.
     #Other variants need to be manually added (plus any relevant source code)
     #Renamed 
@@ -102,6 +113,8 @@ if ($nethome =~ /nethack-(\d\.\d\.\d)/) {
 $base_nhver = '3.4.3' if $slashem;      #Or any other variant.
 $base_nhver = '3.4.3' if $dnethack;     #Also based off 3.4.3
 $base_nhver = '3.4.3' if $unnethack;    #Also based off 3.4.3
+
+$base_nhver = $force_version if $force_version;
 
 print "Using NetHack version $base_nhver\n\n" unless $slashem;
 print "Using SLASH'EM. Only 0.0.7E7F3 is really supported.\n\n" if $slashem;
@@ -301,6 +314,7 @@ my %damage = (
     AD_SLIM =>    " [[sliming]]",
     AD_ENCH =>    " disenchant",
     AD_CORR =>    " [[corrosion]]",
+    AD_POLY =>    " [[polymorph]]",     #Added in 3.7.0
 
     AD_CLRC =>    " (clerical)",
     AD_SPEL =>    "",
@@ -454,21 +468,178 @@ my %mon_count;
 #If these aren't found it will print a "undefined value" warning somewhere.
 my %unknowns;
 
+#Get the regex to use for the MON structure.
+#This is to avoid optional capture groups.
+sub get_regex
+{
+    my ($func_name) = @_;
+    
+    #dNetHack uses its own thing; this function won't be called.
+
+    if ($base_nhver le '3.6.2') {
+        #print "3.6.1\n";
+        #3.6.2 adds Difficulty as an explicit value, instead of calculating it via a function.
+        return qr/
+        MON \(          #Monster definition
+            "(?<NAME>.*)",         #Monster name, quoted string
+            S_(?<SYM>.*?),         #Symbol (always starts with S_)
+            (?:LVL|SIZ)\(          #Open LVL - Shelob's definition in SLASH'EM 0.0.7E7F3 incorrectly uses SIZ, so catch that too.
+                (?<LVL>.*?)               #This will be parsed by parse_level
+            \),                    #Close LVL
+            \(?                    #Open generation flags
+                (?<GEN>.*?)               #Combination of G_ flags (genocide, no_hell or hell, and an int for frequency)
+            \)?,                   #Close generation
+            A\(                    #Open attacks
+                (?<ATK>.*)                #Parsed by parse_attack
+            \),                    #Close attacks
+            SIZ\(                  #SIZ structure
+                (?<SIZ>.*)                #Parsed by parse_size
+            \),                    #Close SIZ
+            (?<MR1>.*?),           #Resistances OR'd together, or 0
+            (?<MR2>.*?),           #Granted resistances
+            (?<FLG1>.*?),          #Flags 1 (M1_, OR'd together)
+            (?<FLG2>.*?),          #Flags 2 (M2_, OR'd together)
+            (?<FLG3>.*?),          #Flags 3
+            (?<COL>.*?)            #Color
+        \),$            #Close MON, anchor to end of string
+        /x;
+    }
+    if ($base_nhver lt '3.7.0') {
+        #3.7.0 adds the define name (e.g. "FOX") near the end.
+        #print "3.6.6\n";
+        return qr/
+        MON \(          #Monster definition
+            "(?<NAME>.*)",         #Monster name, quoted string
+            S_(?<SYM>.*?),         #Symbol (always starts with S_)
+            (?:LVL|SIZ)\(          #Open LVL - Shelob's definition in SLASH'EM 0.0.7E7F3 incorrectly uses SIZ, so catch that too.
+                (?<LVL>.*?)               #This will be parsed by parse_level
+            \),                    #Close LVL
+            \(?                    #Open generation flags
+                (?<GEN>.*?)               #Combination of G_ flags (genocide, no_hell or hell, and an int for frequency)
+            \)?,                   #Close generation
+            A\(                    #Open attacks
+                (?<ATK>.*)                #Parsed by parse_attack
+            \),                    #Close attacks
+            SIZ\(                  #SIZ structure
+                (?<SIZ>.*)                #Parsed by parse_size
+            \),                    #Close SIZ
+            (?<MR1>.*?),           #Resistances OR'd together, or 0
+            (?<MR2>.*?),           #Granted resistances
+            (?<FLG1>.*?),          #Flags 1 (M1_, OR'd together)
+            (?<FLG2>.*?),          #Flags 2 (M2_, OR'd together)
+            (?<FLG3>.*?),          #Flags 3
+            (?<DIFF>\d+),          #Difficulty (3.6.2+)
+            (?<COL>.*?)           #Color
+        \),$            #Close MON, anchor to end of string
+        /x;
+    }
+    
+    #3.7.0+ (using the current git code; not final)
+    #MON3 is a new variant that includes gender names for certain monsters.
+    if ($func_name eq 'MON3') {
+        #print "3.7.0 - MON3\n";
+        return qr/
+        MON3 \(          #Monster definition
+            "(?<MALE_NAME>.*)",    #Male Monster name, quoted string
+            "(?<FEMALE_NAME>.*)",  #Female Monster name, quoted string
+            "(?<NAME>.*)",         #Monster name, quoted string
+            S_(?<SYM>.*?),         #Symbol (always starts with S_)
+            (?:LVL|SIZ)\(          #Open LVL - Shelob's definition in SLASH'EM 0.0.7E7F3 incorrectly uses SIZ, so catch that too.
+                (?<LVL>.*?)               #This will be parsed by parse_level
+            \),                    #Close LVL
+            \(?                    #Open generation flags
+                (?<GEN>.*?)               #Combination of G_ flags (genocide, no_hell or hell, and an int for frequency)
+            \)?,                   #Close generation
+            A\(                    #Open attacks
+                (?<ATK>.*)                #Parsed by parse_attack
+            \),                    #Close attacks
+            SIZ\(                  #SIZ structure
+                (?<SIZ>.*)                #Parsed by parse_size
+            \),                    #Close SIZ
+            (?<MR1>.*?),           #Resistances OR'd together, or 0
+            (?<MR2>.*?),           #Granted resistances
+            (?<FLG1>.*?),          #Flags 1 (M1_, OR'd together)
+            (?<FLG2>.*?),          #Flags 2 (M2_, OR'd together)
+            (?<FLG3>.*?),          #Flags 3
+            (?<DIFF>\d+),          #Difficulty (3.6.2+)
+            (?<COL>.*?),           #Color
+            (?<INDEXNUM>.*?)       #Monster define symbol.
+        \),$            #Close MON, anchor to end of string
+        /x;
+    }
+    
+    #Standard MON function
+    #print "3.7.0 - MON\n";
+    return qr/
+        MON \(          #Monster definition
+            "(?<NAME>.*)",         #Monster name, quoted string
+            S_(?<SYM>.*?),         #Symbol (always starts with S_)
+            (?:LVL|SIZ)\(          #Open LVL - Shelob's definition in SLASH'EM 0.0.7E7F3 incorrectly uses SIZ, so catch that too.
+                (?<LVL>.*?)               #This will be parsed by parse_level
+            \),                    #Close LVL
+            \(?                    #Open generation flags
+                (?<GEN>.*?)               #Combination of G_ flags (genocide, no_hell or hell, and an int for frequency)
+            \)?,                   #Close generation
+            A\(                    #Open attacks
+                (?<ATK>.*)                #Parsed by parse_attack
+            \),                    #Close attacks
+            SIZ\(                  #SIZ structure
+                (?<SIZ>.*)                #Parsed by parse_size
+            \),                    #Close SIZ
+            (?<MR1>.*?),           #Resistances OR'd together, or 0
+            (?<MR2>.*?),           #Granted resistances
+            (?<FLG1>.*?),          #Flags 1 (M1_, OR'd together)
+            (?<FLG2>.*?),          #Flags 2 (M2_, OR'd together)
+            (?<FLG3>.*?),          #Flags 3
+            (?<DIFF>\d+),          #Difficulty (3.6.2+)
+            (?<COL>.*?),            #Color
+            (?<INDEXNUM>.*?)       #Monster define symbol.
+        \),$            #Close MON, anchor to end of string
+        /x;
+}
+sub get_vanilla_ref 
+{
+    my $lineno = shift;
+    
+    #These are still on the wiki
+    return "[[Source:NetHack_3.4.3/src/monst.c#line$lineno|monst.c#line$lineno]]" if ($base_nhver eq '3.4.3');
+    #return "[[Source:NetHack_3.6.0/src/monst.c#line$lineno|monst.c#line$lineno]]" if ($base_nhver eq '3.6.0');
+    #return "[[Source:NetHack_3.6.1/src/monst.c#line$lineno|monst.c#line$lineno]]" if ($base_nhver eq '3.6.1');
+    
+    #github
+    return "[https://github.com/NetHack/NetHack/blob/NetHack-3.6.0_Released/src/monst.c#L$lineno monst.c#line$lineno]" if ($base_nhver eq '3.6.0');
+    return "[https://github.com/NetHack/NetHack/blob/NetHack-3.6.1_Released/src/monst.c#L$lineno monst.c#line$lineno]" if ($base_nhver eq '3.6.1');
+    return "[https://github.com/NetHack/NetHack/blob/NetHack-3.6.2_Released/src/monst.c#L$lineno monst.c#line$lineno]" if ($base_nhver eq '3.6.2');
+    return "[https://github.com/NetHack/NetHack/blob/NetHack-3.6.3_Released/src/monst.c#L$lineno monst.c#line$lineno]" if ($base_nhver eq '3.6.3');
+    return "[https://github.com/NetHack/NetHack/blob/NetHack-3.6.4_Released/src/monst.c#L$lineno monst.c#line$lineno]" if ($base_nhver eq '3.6.4');
+    return "[https://github.com/NetHack/NetHack/blob/NetHack-3.6.5_Released/src/monst.c#L$lineno monst.c#line$lineno]" if ($base_nhver eq '3.6.5');
+    return "[https://github.com/NetHack/NetHack/blob/NetHack-3.6.6_Released/src/monst.c#L$lineno monst.c#line$lineno]" if ($base_nhver eq '3.6.6');
+    
+    #3.7.0 doesn't have a release tag yet
+    return "[https://github.com/NetHack/NetHack/blob/NetHack-3.7/include/monsters.h#L$lineno monsters.h#line$lineno]" if ($base_nhver eq '3.7.0');
+    
+    
+    die "Unknown version $base_nhver";
+}
+
+
 # The main monster parser.  Takes a MON() construct from monst.c and
 # breaks it down into its components.
 my @monsters;
 sub process_monster {
     my $the_mon = shift;
     my $line = shift;
-    my ($name) = $the_mon=~/\s+MON\("(.*?)",/;
+    
+    #Remove all unquoted spaces. From https://stackoverflow.com/questions/9577930/regular-expression-to-select-all-whitespace-that-isnt-in-quotes
+    $the_mon =~ s/(\s+)(?=([^"]*"[^"]*")*[^"]*$)//g;
 
-    $the_mon =~ s/\s//g;
-    $the_mon =~ s/\/\*.*?\*\///g;
-    my $target_ac = $the_mon =~ /MARM\(-?\d+,\s*(-?\d+)\)/;
+    #Comments.
+    $the_mon =~ s|/\*.*?\*/||g;
+    my $target_ac = $the_mon =~ /MARM\(-?\d+,\s*(-?\d+)\)/;     #This was removed at some point.
     $the_mon =~ s/MARM\((-?\d+),\s*-?\d+\)/$1/;
     
-    #Skip the array terminator, which is nameless
-    return undef if $name eq '';
+    #Skip the array terminator
+    return undef if $the_mon =~ /MON\(""/;
 
 =nh3.6.0
     MON("fox", S_DOG, LVL(0, 15, 7, 0, 0), (G_GENO | 1),
@@ -488,57 +659,55 @@ sub process_monster {
         1,                                          #Difficulty
         CLR_RED),                                   #mcolor
 =cut
-
-    my @m_res = $the_mon =~ 
-        /
-        MON \(          #Monster definition
-            ".*",           #Monster name, quoted string
-            S_(.*?),        #Symbol (always starts with S_)
-            (?:LVL|SIZ)\(   #Open LVL - Shelob's definition in SLASH'EM 0.0.7E7F3 incorrectly uses SIZ, so catch that too.
-                (.*?)           #This will be parsed by parse_level
-            \),             #Close LVL
-            \(?             #Open generation flags
-                (.*?)           #Combination of G_ flags (genocide, no_hell or hell, and an int for frequency)
-            \)?,            #Close generation
-            A\(             #Open attacks
-                (.*)            #Parsed by parse_attack
-            \),             #Close attacks
-            SIZ\(           #SIZ structure
-                (.*)            #Parsed by parse_size
-            \),             #Close SIZ
-            (.*?),          #Resistances OR'd together, or 0
-            (.*?),          #Granted resistances
-            (.*?),          #Flags 1 (M1_, OR'd together)
-            (.*?),          #Flags 2 (M2_, OR'd together)
-            (.*?),          #Flags 3
-            (?:(\d+),)?     #Difficulty (3.6.2+)
-            (.*?)           #Color
-        \),$            #Close MON, anchor to end of string
-        /x;
-    #Unpack results
-    my ($sym,$lvl,$gen,$atk,$siz,$mr1,$mr2,$flg1,$flg2,$flg3,$diff,$col) = @m_res;
+#3.7.0 Adds MON3 for gendered names. Before, all dwarf kings were male; now queens can exist as well.
+#The actual monster name is now "dwarf ruler"
+#Standard MON is also altered to include the defined name as the last parameter
+=nh3.7.0
+    MON("fox", S_DOG, LVL(0, 15, 7, 0, 0), (G_GENO | 1),
+        A(ATTK(AT_BITE, AD_PHYS, 1, 3), NO_ATTK, NO_ATTK, NO_ATTK, NO_ATTK, NO_ATTK),
+        SIZ(300, 250, MS_BARK, MZ_SMALL), 0, 0,
+        M1_ANIMAL | M1_NOHANDS | M1_CARNIVORE, M2_HOSTILE, M3_INFRAVISIBLE,
+        1, CLR_RED, FOX),
+    MON3("dwarf king", "dwarf queen", "dwarf ruler",
+        S_HUMANOID, LVL(6, 6, 10, 20, 6), (G_GENO | 1),
+        A(ATTK(AT_WEAP, AD_PHYS, 2, 6), ATTK(AT_WEAP, AD_PHYS, 2, 6), NO_ATTK, NO_ATTK, NO_ATTK, NO_ATTK),
+        SIZ(900, 300, MS_HUMANOID, MZ_HUMAN), 0, 0,
+        M1_TUNNEL | M1_NEEDPICK | M1_HUMANOID | M1_OMNIVORE,
+        M2_DWARF | M2_STRONG | M2_PRINCE | M2_GREEDY | M2_JEWELS | M2_COLLECT,
+        M3_INFRAVISIBLE | M3_INFRAVISION, 8, HI_LORD, DWARF_RULER),
+=cut
+    #Figure out if this is MON or MON3
+    my ($func) = $the_mon =~ /(MON.?)\(/;
     
-    #use Data::Dumper;
-    #print Dumper(\@m_res);
+    my $re = get_regex($func);
+
+    $the_mon =~ /$re/x;
+    #Results are in %-
+    #print Dumper(\%-);
+    #print "--$the_mon--\n";
     #exit;
+    
+    die "monster parse error\n\n$the_mon" unless $-{LVL} && $-{LVL}[0];
 
-    die "monster parse error\n\n$the_mon" unless $lvl;
-
+    my $name = $-{NAME}[0];
+    my $col = $-{COL}[0];
     $col = "NO_COLOR" if ($name eq "ghost" || $name eq "shade");
     my $mon_struct = {
         NAME   => $name,
-        SYMBOL => $sym,
-        LEVEL  => parse_level($lvl),
+        MALE_NAME => $-{MALE_NAME} && $-{MALE_NAME}[0],
+        FEMALE_NAME => $-{FEMALE_NAME} && $-{FEMALE_NAME}[0],
+        SYMBOL => $-{SYM}[0],
+        LEVEL  => parse_level($-{LVL}[0]),
         TARGET => $target_ac,        #'Target' AC; monsters that typically start with armor have 10 base AC but lower target AC
-        GEN    => $gen,
-        ATK    => parse_attack($atk),
-        SIZE   => parse_size($siz),
-        MR1    => $mr1,
-        MR2    => $mr2,
-        FLGS   => "$flg1|$flg2|$flg3",
+        GEN    => $-{GEN}[0],
+        ATK    => parse_attack($-{ATK}[0]),
+        SIZE   => parse_size($-{SIZ}[0]),
+        MR1    => $-{MR1}[0],
+        MR2    => $-{MR2}[0],
+        FLGS   => "$-{FLG1}[0]|$-{FLG2}[0]|$-{FLG3}[0]",
         COLOR  => $col,
         REF    => $line,
-        MONS_DIFF => $diff,     #3.6.2 only
+        MONS_DIFF => $-{DIFF}[0],     #3.6.2 only
     };
 
     # TODO: Automate this from the headers too.
@@ -810,8 +979,11 @@ while (my $l = <$DBASE>) {
     }
 }
 
+#Monsters are declared in monst.c. In 3.7.0, this was moved to be in monsters.h (#included from monst.c)
+my $src_filename = 'src/monst.c';
+$src_filename = 'include/monsters.h' if ($base_nhver ge '3.7.0');
 
-open my $MONST, "<", "${nethome}/src/monst.c" or die "Couldn't open monst.c - $!";
+open my $MONST, "<", File::Spec->catfile($nethome, $src_filename) or die "Couldn't open $src_filename - $!";
 my $sex_attack = "";
 my $having_sex = 0;
 my $curr_mon = 0;
@@ -969,6 +1141,11 @@ sub output_monster_html
         
         my $exp = &calc_exp($m);
         
+        my $ac = $m->{LEVEL}->{AC};
+        my $align = $m->{LEVEL}->{ALN};
+        $ac =~ s/-/&minus;/;
+        $align =~ s/-/&minus;/;
+        
         print $HTML <<EOF;
 {{ monster
  |name=$print_name
@@ -976,9 +1153,9 @@ sub output_monster_html
  |level=$m->{LEVEL}->{LVL}
  |experience=$exp
  |speed=$m->{LEVEL}->{MOV}
- |AC=$m->{LEVEL}->{AC}
+ |AC=$ac
  |MR=$m->{LEVEL}->{MR}
- |align=$m->{LEVEL}->{ALN}
+ |align=$align
  |frequency=$frequency
  |genocidable=$genocidable
 EOF
@@ -1064,6 +1241,9 @@ EOF
         $m->{MR1} =~ s/MR_ALL/MR_STONE\|MR_ACID\|MR_POISON\|MR_ELEC\|MR_DISINT\|MR_SLEEP\|MR_COLD\|MR_FIRE\|MR_DRAIN\|MR_SICK/ 
                 if $dnethack;
 
+        # Rename "see_invis" to "seeinvis" to match template
+        $m->{FLGS} =~ s/SEE_INVIS/SEEINVIS/g;
+        
         # Same for resistances.
         my $resistances = "";
         my @resistances;
@@ -1079,7 +1259,7 @@ EOF
                     $unknowns{$mr} = $print_name if !defined $flags{$mr};
                 }
             }
-
+            
             #Death, Demons, Were-creatures, and the undead automatically have level drain resistance
             #Add it, unless they have an explicit MR_DRAIN tag (SLASH'EM only)
             push @resistances, "level drain" if ( ($m->{NAME} eq "Death" || $m->{FLGS} =~ /M2_DEMON/ || $m->{FLGS} =~ /M2_UNDEAD/ || $m->{FLGS} =~ /M2_WERE/)
@@ -1105,6 +1285,13 @@ EOF
         # Nethackwiki nicely supports templates that are equivalent.
         # So all that's necessary is to strip and reformat the flags.
         {
+            my $attr_name = $m->{NAME};
+            if ($m->{FEMALE_NAME})
+            {
+                #The wiki does not currently have a "template" for fe/male name. This is what the Foocubus article does.
+                #$attr_name = "$m->{FEMALE_NAME} or $m->{MALE_NAME}";
+                #TODO: I believe the |tile= parameter is also needed. Again, wait until the templates support these names.
+            }
             my $article = "A ";
             if ($m->{FLGS} =~ /M2_PNAME/)
             {
@@ -1117,8 +1304,10 @@ EOF
             else
             {
                 $article = "A ";
+                #There are exceptions to this (see just_an, objnam.c), but I don't think any of them apply.
+                $article = "An " if ($attr_name =~ m/^[aeiou]/);
             }
-            print $HTML " |attributes={{attributes|${article}$m->{NAME}";
+            print $HTML " |attributes={{attributes|${article}$attr_name";
 
             if ($m->{MR1} =~ /MR_(HITAS[A-Z]+)/)
             {
@@ -1190,7 +1379,8 @@ EOF
         #TODO: SLASHTHEM
         else {
             #Vanilla
-            print $HTML " |reference=[[monst.c#line$m->{REF}]]";
+            my $ref = get_vanilla_ref($m->{REF});
+            print $HTML " |reference=$ref";
         }
 
         #print Dumper(@entries), "\n";
@@ -1721,7 +1911,7 @@ sub parse_permonst
         my $val = $2;
         
         #I doubt this will happen but if it does, it will break things elsewhere.
-        die "NATTK redefined! ($val)" if $key eq 'NATTK' && $val != 6;
+        die "NATTK value changed! ($val)" if $key eq 'NATTK' && $val != 6;
         
         #All we care about for now.
         #There are other defines like "VERY_SLOW" but they don't appear to be used.
