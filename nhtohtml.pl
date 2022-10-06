@@ -44,11 +44,14 @@ use warnings;
 use Getopt::Long;
 use File::Spec;
 
+use JSON;
+
 use Data::Dumper;
 
 my $rev = '$Revision: 2.06w $ ';
 my ($version) = $rev=~ /Revision:\s+(.*?)\s?\$/;
 my $force_version;
+my $output_path;
 
 print <<EOF;
 nhtohtml.pl version $version, Copyright (C) 2004 Robert Sim
@@ -59,12 +62,17 @@ EOF
 
 #Git clone in particular won't include the version number in the dir.
 #Consider reading from README instead. I don't think that's viable for any variants, however.
-GetOptions('version|v=s' => \$force_version,);
+GetOptions(
+    'version|v=s' => \$force_version,
+    'output|o=s' => \$output_path,
+);
 die "--version argument should be in the form 'x.x.x', corresponding to the base NetHack version (got $force_version)" 
     if $force_version && $force_version !~ /^\d+\.\d+\.\d+$/;
 
 #my $nethome = "C:/temp/slashem-0.0.7E7F3/";
 my $nethome = shift || "C:/temp/nethack-3.4.3";
+
+$output_path = 'html' unless $output_path;
 
 #for consistency; replace all \ with /.
 $nethome =~ s|\\|/|g;
@@ -81,10 +89,10 @@ die "SLASHEM-Extended is not supported." if $nethome =~ /SLASHEM[-_ ]Extended/i;
 #TODO: If other variants need special logic, add checks here
 #(I haven't kept up to date on variants)
 #Including the various SLASH'EM forks
-my $slashem = $nethome =~ /slashem/i;  #Modify the src reference
-my $dnethack = $nethome =~ /dnethack/i;
-my $unnethack = $nethome =~ /unnethack/i;
-my $slashthem = $nethome =~ /SlashTHEM/i;
+my $slashem          = $nethome =~ /slashem/i;  #Modify the src reference
+my $dnethack         = $nethome =~ /dnethack/i;
+my $unnethack        = $nethome =~ /unnethack/i;
+my $slashthem        = $nethome =~ /SlashTHEM/i;
 my $slashem_extended = $nethome =~ /SLASHEM[-_ ]Extended/i;
 #Note - slashthem monster "tracker jacker" will report unknown M1_ACID usage. It was placed in resistances, instead of MR_ACID
 
@@ -121,43 +129,9 @@ print "Using SLASH'EM. Only 0.0.7E7F3 is really supported.\n\n" if $slashem;
 
 #Done automatically by wiki template. Even for the SLASH'EM stuff.
 
-my %flags = (
-    MR_FIRE    =>      'fire',
-    MR_COLD    =>      'cold',
-    MR_SLEEP   =>      'sleep',
-    MR_DISINT  =>      'disintegration',
-    MR_ELEC    =>      'electricity',
-    MR_POISON  =>      'poison',
-    MR_ACID    =>      'acid',
-    MR_STONE   =>      'petrification',
-    
-    #SLASH'EM
-    MR_DEATH   =>      'death magic',
-    MR_DRAIN   =>      'level drain',
-    
-    #dNetHack
-    MR_SICK    =>      'sickness',
-    #MR_DRAIN
+my $consts = load_json_data();
 
-    G_UNIQ     =>      'generated only once',
-    G_NOHELL   =>      'nohell',
-    G_HELL     =>      'hell',
-
-    G_NOGEN    =>      'generated only specially',
-    G_SGROUP   =>      'appear in small groups normally',
-    G_LGROUP   =>      'appear in large groups normally',
-    G_GENO     =>      'can be genocided',
-    G_NOCORPSE =>      'nocorpse',
-    
-    #UnNetHack
-    G_SHEOL    =>      'sheol',
-    G_NOSHEOL  =>      'nosheol',
-    
-    #SLASH'EM
-    G_VLGROUP  =>      'appear in very large groups normally',
-    
-    
-);
+my %flags = %{$consts->{flags}};
 
 #Flags parsed from permonst.h. In vanilla, these are just WT_* flags, which are
 #only used for human, elf, and dragon. dnethack also adds nutrition, CN_*
@@ -169,288 +143,33 @@ my $permonst_flags = parse_permonst("$nethome/include/permonst.h");
 #of each of the definitions.
 my ($atk_ints, $dmg_ints) = parse_monattk("$nethome/include/monattk.h");
 
-my %sizes = (
-    MZ_TINY     =>      'Tiny',
-    MZ_SMALL    =>      'Small',
-    MZ_MEDIUM   =>      'Medium',
-    MZ_HUMAN    =>      'Medium',
-    MZ_LARGE    =>      'Large',
-    MZ_HUGE     =>      'Huge',
-    MZ_GIGANTIC =>      'Gigantic',
-    0           =>      '0'
-);
+my %sizes = %{$consts->{sizes}};
 
-my %frequencies = (
-    '0'    => 'Not randomly generated',
-    '1'    => 'Very rare',
-    '2'    => 'Quite rare',
-    '3'    => 'Rare',
-    '4'    => 'Uncommon',
-    '5'    => 'Common',
-    '6'    => 'Very common',
-    '7'    => 'Prolific',
-);
+my %frequencies = %{$consts->{frequencies}};
 
 # We define the colors by hand. They're all rough guesses.
-my %colors = (
-    CLR_BLACK =>"404040",
-    CLR_RED => "880000",
-    CLR_GREEN => "008800",
-    CLR_BROWN => "888800", # Low-intensity yellow
-    CLR_BLUE => "000088",
-    CLR_MAGENTA    => "880088",
-    CLR_CYAN    => "008888",
-    CLR_GRAY    => "888888",
-    NO_COLOR    => "000000",
-    CLR_ORANGE    => "ffaa00",
-    CLR_BRIGHT_GREEN => "00FF00",
-    CLR_YELLOW => "ffff00",
-    CLR_BRIGHT_BLUE  => "0000FF",
-    CLR_BRIGHT_MAGENTA => "ff00ff",
-    CLR_BRIGHT_CYAN    => "00ffff",
-    CLR_WHITE    => "FFFFFF"
-);
+my %colors = %{$consts->{colors}};
 
-
-my %attacks = (
-    AT_NONE => "[[Passive]]",    #Many passive attacks are 0dx, with 0 being based on level.
-    AT_CLAW => "Claw",
-    AT_BITE => "Bite",
-    AT_KICK => "Kick",
-    AT_BUTT => "Head butt",
-    AT_TUCH => "Touch",
-    AT_STNG => "Sting",
-    AT_HUGS => "Hug",
-    AT_SPIT => "Spit",
-    AT_ENGL => "[[Engulfing]]",
-    AT_BREA => "Breath",
-    AT_EXPL => "Explode",
-    AT_BOOM => "Explode",    #When Killed
-    AT_GAZE => "Gaze",
-    AT_TENT => "Tentacles",
-    AT_WEAP => "Weapon",
-    AT_MAGC => "[[monster spell|Spell-casting]]"
-);
-my %slashem_attacks = (
-    AT_MULTIPLY => "Multiply",
-);
-my %dnethack_attacks = (
-    AT_ARRW	=> "Arrow",
-    AT_WHIP	=> "Whip",
-    AT_LRCH	=> "Reach",
-    AT_HODS	=> "Your weapon",      #Hod Sephirah's mirror attack
-    AT_LNCK	=> "Bite (Reach)",
-    AT_MMGC	=> "Monster Magic",    #"but don't allow player spellcasting"
-    AT_ILUR	=> "Engulf",           #Two stage swallow attack, currently belongs to Illurien only	
-    AT_HITS	=> "Automatic hit",
-    AT_WISP	=> "Mist tendrils",
-    AT_TNKR	=> "Tinker",
-    AT_SHDW	=> "Shadow blades",
-    AT_BEAM	=> "Beam",
-    AT_DEVA	=> "Deva Arms",
-    AT_5SQR	=> "five-square-reach touch",
-    AT_WDGZ	=> "wide-angle (passive) gaze",    #like medusa
-
-    AT_WEAP	=> "Weapon",
-    AT_XWEP	=> "Offhand Weapon",
-    AT_MARI	=> "Multiarm Weapon",
-    AT_MAGC	=> "Cast",
-);
-my %unnethack_attacks = (
-    AT_SCRE => "scream",        #Nazgul
-);
-my %slashthem_attacks = (
-    AT_SCRA  => 'scratch',
-    AT_LASH  => 'lash',
-    AT_TRAM  => 'trample',
-);
+my %attacks = %{$consts->{attacks}};
+my %slashem_attacks = %{$consts->{slashem_attacks}};
+my %dnethack_attacks = %{$consts->{dnethack_attacks}};
+my %unnethack_attacks = %{$consts->{unnethack_attacks}};
+my %slashthem_attacks = %{$consts->{slashthem_attacks}};
 %attacks = (%attacks, %slashem_attacks) if $slashem;
 %attacks = (%attacks, %dnethack_attacks) if $dnethack;
 %attacks = (%attacks, %unnethack_attacks) if $unnethack;
 
 %attacks = (%attacks, %slashem_attacks, %unnethack_attacks, %slashthem_attacks) if ($slashthem || $slashem_extended);
 
-my %damage = (
-    AD_PHYS =>    "",    #Physical attack; nothing special about it
-    AD_MAGM =>    " [[magic missile]]",
-    AD_FIRE =>    " [[fire]]",
-    AD_COLD =>    " [[cold]]",
-    AD_SLEE =>    " [[sleep]]",
-    AD_DISN =>    " [[disintegration]]",
-    AD_ELEC =>    " [[shock]]",
-    AD_DRST =>    " [[poison]]",    #Strength draining
-    AD_ACID =>    " [[acid]]",
-    AD_SPC1 =>    " buzz",        #Unused
-    AD_SPC2 =>    " buzz",        #Unused
-    AD_BLND =>    " [[blind]]",
-    AD_STUN =>    " [[stun]]",
-    AD_SLOW =>    " [[slowing]]",
-    AD_PLYS =>    " [[paralysis]]",
-    AD_DRLI =>    " [[drain life]]",
-    AD_DREN =>    " [[drain energy]]",
-    AD_LEGS =>    " scratching, targets legs",    #"Targets legs"
-    AD_STON =>    " [[stoning]]",    #Cockatrice article currently uses "Petrification" (no linking)
-    AD_STCK =>    " [[sticky]]",
-    AD_SGLD =>    " [[steal gold]]",
-    AD_SITM =>    " [[steal item]]",
-    AD_SEDU =>    " [[seduce]]",
-    AD_TLPT =>    " [[teleport]]",
-    AD_RUST =>    " [[erosion]]",
-    AD_CONF =>    " [[confusion]]",
-    AD_DGST =>    " [[digestion]]",
-    AD_HEAL =>    " [[heal]]",
-    AD_WRAP =>    " [[drowning]]",
-    AD_WERE =>    " [[lycanthropy]]",
-    AD_DRDX =>    " [[poisonous]] ([[dexterity]])",
-    AD_DRCO =>    " [[poisonous]] ([[constitution]])",    #Rabid rat uses "Constitution draining poison"
-    AD_DRIN =>    " [[intelligence]] drain",
-    AD_DISE =>    " [[disease]]",
-    AD_DCAY =>    " decays organic items ",
-    AD_SSEX =>    " Seduction ''(see article)''",
-    AD_HALU =>    " [[hallucinate]]",
-    AD_DETH =>    " [[Touch of death]]",
-    AD_PEST =>    " plus [[disease]]",
-    AD_FAMN =>    " plus hunger",        #Article states stun; source seems to indicate that it's JUST hunger, but two consecutive hunger attacks = 1 hunger, 1 stun
-    AD_SLIM =>    " [[sliming]]",
-    AD_ENCH =>    " disenchant",
-    AD_CORR =>    " [[corrosion]]",
-    AD_POLY =>    " [[polymorph]]",     #Added in 3.7.0
+my %damage = %{$consts->{damage}};
 
-    AD_CLRC =>    " (clerical)",
-    AD_SPEL =>    "",
-    AD_RBRE =>    "",    #Chromatic Dragon only. Article just says "breath xdy"
-
-    AD_SAMU =>    " [[covetous|amulet-stealing]]",    #Quest nemesis should have "[[covetous|quest-artifact-stealing]]"
-    AD_CURS =>    " [[intrinsic]]-stealing",
-
-    #Used by the beholder in NetHack, but not implemented.
-    #Added this definition just to avoid undef warnings
-    AD_CNCL =>    " Unimplemented",
-);
-
-my %slashem_damage = (
-    #SLASH'EM specific defines
-    AD_TCKL =>      " tickle",
-    AD_POLY =>      " [[polymorph]]",
-    AD_CALM =>      " calm",
-    0       =>      '',     #Used with AT_MULTIPLY
-);
+my %slashem_damage = %{$consts->{slashem_damage}};
 
 #These aren't matching up with the values in allmain!
-my %dnethack_damage = (
-    AD_POSN	 => " [[poison]] (HP damage)",
-    AD_WISD	 => " [[wis drain]]",
-    AD_VORP	 => " [[vorpal]]",
-    AD_SHRD	 => " [[armor shredding]]",
-    AD_SLVR	 => " [[silver]]",           #arrows should be silver
-    AD_BALL	 => " [[cannon ball]]",      #arrows should be iron balls
-    AD_BLDR	 => " [[boulder]]",          #arrows should be boulders
-    AD_VBLD	 => " [[random boulder]]",   #arrows should be boulders and fired in a random spread
-    AD_TCKL	 => " [[tickling]]",
-    AD_WET	 => " [[soaking]]",
-    AD_LETHE => " [[lethe]]",
-    AD_BIST	 => " [[bisection]]",        #Not implemented
-    AD_CNCL	 => " [[cancellation]]",
-    AD_DEAD	 => " [[deadly]]",           #deadly gaze
-    AD_SUCK	 => " [[suction]]",
-    AD_MALK	 => " [[malkuth]]",
-    AD_UVUU	 => " [[uvuudaum brainspike]]",
-    AD_ABDC	 => " [[abduction]]",
-    AD_KAOS	 => " [[spawn Chaos]]",
-    AD_LSEX	 => " [[seduction]]",        #Deprecated
-    AD_HLBD	 => " [[hellblood]]",
-    AD_SPNL	 => " [[spawn Leviathan]]",
-    AD_MIST	 => " [[mist projection]]",
-    AD_TELE	 => " [[teleport away]]",
-    AD_POLY	 => " [[baleful polymorph]]",#Monster alters your DNA (was for the now-defunct genetic enginier Q)
-    AD_PSON	 => " [[psionic]]",          #DEFERED psionic attacks.
-    AD_GROW	 => " [[promotion]]",
-    AD_SOUL	 => " [[shared soul]]",
-    AD_TENT	 => " [[intrusion]]",
-    AD_JAILER=> " [[jailer]]",
-    AD_AXUS	 => " [[special]]",          #Multi-element counterattack, angers 'tons
-    AD_UNKNWN=> " [[take artifact]]",    #Priest of an unknown God
-    AD_SOLR	 => " [[silver]]",           #Light Archon's silver arrow attack
-    AD_CHKH	 => " [[special]]",          #Chokhmah Sephirah's escalating damage attack
-    AD_HODS	 => " [[your weapon]]",      #Hod Sephirah's mirror attack
-    AD_CHRN	 => " [[cursed unicorn horn]]",
-    AD_LOAD	 => " [[loadstone]]",
-    AD_GARO	 => " [[garo report]]",      #blows up after dispensing rumor
-    AD_GARO_MASTER => " [[garo report]]",  #blows up after dispensing oracle
-    AD_LVLT	 => " [[level teleport]]",
-    AD_BLNK	 => " [[blink]]",            #mental invasion (weeping angel)
-    AD_WEEP	 => " [[angel's touch]]",    #Level teleport and drain (weeping angel)
-    AD_SPOR	 => " [[spore]]",
-    AD_FNEX	 => " [[explosive spore]]",  #FerN spore EXplosion
-    AD_SSUN	 => " [[sunlight]]",         #Slaver Sunflower gaze
-    AD_MAND	 => " [[deadly shriek]]",    #Mandrake's dying shriek (kills all on level, use w/ AT_BOOM)
-    AD_BARB	 => " [[barbs]]",
-    AD_LUCK	 => " [[luck drain]]",       #Luck-draining gaze (UnNetHack)
-    AD_VAMP	 => " [[vampiric]]",
-    AD_WEBS	 => " [[webbing]]",
-    AD_ILUR	 => " [[special]]",          #memory draining engulf attack belonging to Illurien
-    AD_TNKR	 => " [[spawn gizmos]]",
-    AD_FRWK	 => " [[fireworks]]",
-    AD_STDY	 => " [[study]]",
-    AD_OONA	 => " [[fire]], [[cold]], or [[shock]]",     #Oona's variable energy type and v and e spawning
-    AD_NTZC	 => " [[netzach]]",          #netzach sephiroth's anti-equipment attack
-    AD_WTCH	 => " [[special]]",          #The Watcher in the water's tentacle-spawning gaze
-    AD_SHDW	 => " [[shadow]]",
-    AD_STTP	 => " [[armor teleportation]]",
-    AD_HDRG	 => " [[half-dragon breath]]",
-    AD_STAR	 => " [[silver rapier]]",    #Tulani silver starlight rapier
-    AD_EELC	 => " elemental [[shock]]",  #Elemental electric
-    AD_EFIR	 => " elemental [[fire]]",
-    AD_EDRC	 => " elemental [[poison]]",
-    AD_ECLD	 => " elemental [[cold]]",
-    AD_EACD	 => " elemental [[acid]]",
-    AD_CNFT	 => " conflict",
-    AD_BLUD	 => " blood blade",
-    AD_SURY	 => " Surya Deva arrow",         #Surya Deva's arrow of slaying
-    AD_NPDC	 => " [[constitution]] drain",   #drains constitution (not poison)
+my %dnethack_damage = %{$consts->{dnethack_damage}};
+my %unnethack_damage = %{$consts->{unnethack_damage}};
 
-    #The rest don't match what's in allmain.c...
-    # AD_GLSS	 => 118,        #silver mirror shards
-    AD_MERC	 => " mercury blade",        #mercury blade
-    # 
-    # AD_DUNSTAN	120,
-    # AD_IRIS		121,
-    # AD_NABERIUS	122,
-    # AD_OTIAX	123,
-    # AD_SIMURGH	124,
-    # 
-    # AD_CMSL     125,
-    # AD_FMSL     126,
-    # AD_EMSL     127,
-    # AD_SMSL     128,
-    # 
-    # #AD_CLRC   129,
-    # #AD_SPEL    130,
-    AD_RGAZ     => " random",
-    AD_RETR     => " random elemental",
-    # 
-    # #AD_SAMU   133,
-    # #AD_CURS   134,
-    AD_SQUE  => ' [[covetous|quest-artifact-stealing]]',
-);
-my %unnethack_damage = (
-    AD_LAVA  => ' [[fire]]',    #Current article just says "Fire". I see no special behavior, not even burning.
-    AD_LUCK  => ' steal [[luck]]',  #Evil eye
-    AD_FREZ  => ' [[freeze]]',  #Blue slime
-    AD_HEAD  => ' beheading',   #Vorpal jabberwock
-    AD_PUNI  => ' punish',      #Used by punisher. Includes ball&chain, but that's not it.
-    AD_LVLT  => ' [[level teleport]]',
-    AD_BLNK  => ' blink',       #Weeping angel. Adds 1d4 damage. ATTK shows 0d0
-    AD_SPOR  => ' produce spores',#release a spore if the player is nearby
-);
-
-my %slashthem_damage = (
-    AD_LITE  => ' brighten room',
-    AD_DARK  => ' darken room',
-    AD_WTHR  => ' withers items',
-    AD_GLIB  => ' disarms you',
-    AD_NGRA  => ' removes engravings',
-);
+my %slashthem_damage = %{$consts->{slashthem_damage}};
 
 %damage = (%damage, %dnethack_damage) if $dnethack;
 %damage = (%damage, %slashem_damage) if $slashem;
@@ -687,7 +406,7 @@ sub process_monster {
     #print "--$the_mon--\n";
     #exit;
     
-    die "monster parse error\n\n$the_mon" unless $-{LVL} && $-{LVL}[0];
+    die "monster parse error\n\n$the_mon" unless defined $-{LVL} && defined $-{LVL}[0];
 
     my $name = $-{NAME}[0];
     my $col = $-{COL}[0];
@@ -707,7 +426,7 @@ sub process_monster {
         FLGS   => "$-{FLG1}[0]|$-{FLG2}[0]|$-{FLG3}[0]",
         COLOR  => $col,
         REF    => $line,
-        MONS_DIFF => $-{DIFF}[0],     #3.6.2 only
+        MONS_DIFF => $-{DIFF} && $-{DIFF}[0],     #3.6.2 only
     };
 
     # TODO: Automate this from the headers too.
@@ -1090,7 +809,7 @@ while (my $l = <$MONST>) {
 #No parameters; just uses globals.
 sub output_monster_html
 {
-    `mkdir html` unless -e 'html';
+    `mkdir $output_path` unless -d $output_path;
 
     # For each monster, create the html.
     my $last_html = "";
@@ -1105,7 +824,7 @@ sub output_monster_html
 
         print "HTML: $htmlname\n";
 
-        open my $HTML, ">", "html/$htmlname" or die $!;
+        open my $HTML, ">", "$output_path/$htmlname" or die $!;
 
         my $genocidable = (index($m->{GEN}, "G_GENO") != -1 ? "Yes" : "No");
         my $found = ($m->{GEN} =~ /([0-7])/);
@@ -1427,7 +1146,7 @@ HEADER
 
     print "Writing: monsters_by_exp.txt\n";
     
-    open my $HTML, ">", "monsters_by_exp.txt" or die $!;
+    open my $HTML, ">", "$output_path/monsters_by_exp.txt" or die $!;
     
     print $HTML $header;
     
@@ -2045,4 +1764,21 @@ sub do_define_substitutions
     }
     
     return $line;
+}
+
+#Load in data.json and parse it as JSON.
+#This file includes comments using # (since it used to be embedded in the script). This is invalid.
+#Fortunately, none of the const data uses #, so this is trivial to remove by regex.
+sub load_json_data
+{
+    my $filename = 'data.json';
+    local $/;
+    
+    open my $DATA, "<", $filename or die "$filename - $!";
+    my $filedata = <$DATA>;
+    $filedata =~ s/#.*$//gm;
+    
+    #print($filedata);
+    my $data = decode_json($filedata);
+    return $data;
 }
