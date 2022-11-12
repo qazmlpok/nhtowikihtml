@@ -48,10 +48,11 @@ use JSON;
 
 use Data::Dumper;
 
-my $rev = '$Revision: 2.06w $ ';
-my ($version) = $rev=~ /Revision:\s+(.*?)\s?\$/;
+my $version = '2.10w';
+my $rev = "\$Revision: $version \$ ";
 my $force_version;
 my $output_path;
+my $only_mon;
 
 print <<EOF;
 nhtohtml.pl version $version, Copyright (C) 2004 Robert Sim
@@ -65,6 +66,7 @@ EOF
 GetOptions(
     'version|v=s' => \$force_version,
     'output|o=s' => \$output_path,
+    'only=s' => \$only_mon,
 );
 die "--version argument should be in the form 'x.x.x', corresponding to the base NetHack version (got $force_version)" 
     if $force_version && $force_version !~ /^\d+\.\d+\.\d+$/;
@@ -181,6 +183,8 @@ my %slashthem_damage = %{$consts->{slashthem_damage}};
 # mon_count hash to keep track of them and flag cases where we need to
 # specify.
 my %mon_count;
+
+my @monsters;
 
 #Dumping place for flags that need to be manually set.
 #Variants will likely add new damage types, attack types, resistances...
@@ -326,13 +330,7 @@ sub get_vanilla_ref
     #return "[[Source:NetHack_3.6.1/src/monst.c#line$lineno|monst.c#line$lineno]]" if ($base_nhver eq '3.6.1');
     
     #github
-    return "[https://github.com/NetHack/NetHack/blob/NetHack-3.6.0_Released/src/monst.c#L$lineno monst.c#line$lineno]" if ($base_nhver eq '3.6.0');
-    return "[https://github.com/NetHack/NetHack/blob/NetHack-3.6.1_Released/src/monst.c#L$lineno monst.c#line$lineno]" if ($base_nhver eq '3.6.1');
-    return "[https://github.com/NetHack/NetHack/blob/NetHack-3.6.2_Released/src/monst.c#L$lineno monst.c#line$lineno]" if ($base_nhver eq '3.6.2');
-    return "[https://github.com/NetHack/NetHack/blob/NetHack-3.6.3_Released/src/monst.c#L$lineno monst.c#line$lineno]" if ($base_nhver eq '3.6.3');
-    return "[https://github.com/NetHack/NetHack/blob/NetHack-3.6.4_Released/src/monst.c#L$lineno monst.c#line$lineno]" if ($base_nhver eq '3.6.4');
-    return "[https://github.com/NetHack/NetHack/blob/NetHack-3.6.5_Released/src/monst.c#L$lineno monst.c#line$lineno]" if ($base_nhver eq '3.6.5');
-    return "[https://github.com/NetHack/NetHack/blob/NetHack-3.6.6_Released/src/monst.c#L$lineno monst.c#line$lineno]" if ($base_nhver eq '3.6.6');
+    return "[https://github.com/NetHack/NetHack/blob/NetHack-${base_nhver}_Released/src/monst.c#L$lineno monst.c#line$lineno]" if ($base_nhver =~ '^3.6.[0-6]$');
     
     #3.7.0 doesn't have a release tag yet
     return "[https://github.com/NetHack/NetHack/blob/NetHack-3.7/include/monsters.h#L$lineno monsters.h#line$lineno]" if ($base_nhver eq '3.7.0');
@@ -344,7 +342,6 @@ sub get_vanilla_ref
 
 # The main monster parser.  Takes a MON() construct from monst.c and
 # breaks it down into its components.
-my @monsters;
 sub process_monster {
     my $the_mon = shift;
     my $line = shift;
@@ -400,6 +397,7 @@ sub process_monster {
     
     my $re = get_regex($func);
 
+
     $the_mon =~ /$re/x;
     #Results are in %-
     #print Dumper(\%-);
@@ -410,6 +408,9 @@ sub process_monster {
 
     my $name = $-{NAME}[0];
     my $col = $-{COL}[0];
+    if ($only_mon && lc $name ne lc $only_mon) {
+        return;
+    }
     $col = "NO_COLOR" if ($name eq "ghost" || $name eq "shade");
     my $mon_struct = {
         NAME   => $name,
@@ -580,8 +581,8 @@ sub parse_level {
         LVL => $lv,
         BASE_LVL => $base_lv,
         MOV => $mov,
-        AC => $ac,
-        MR => $mr,
+        AC  => $ac,
+        MR  => $mr,
         ALN => $aln,
     };
     
@@ -666,37 +667,43 @@ sub eval_wt_nut {
 # The tag matching is slightly wrong, or at least outdated. "womBAT" was bringing up the bat entry, for example.
 # Haven't yet looked into how it works though, and it's not a _huge_ deal...
 
-# Read the text descriptions from the help database.
-open my $DBASE, "<", "${nethome}/dat/data.base" or die $!;
-my @entries;
-my $tags = [];
-my $entry = "";
-while (my $l = <$DBASE>) {
-    next if ($l =~ /^#/); # Ignore comments
-    # Lines beginning with non-whitespace are tags
-    if ($l =~ /^\S/) {
-        # If $entry is non-empty, then the last entry is done, push it.
-        if ($entry) {
-            #print STDERR "Entry:\n@{$tags}\n$entry\n";
-            push @entries, {
-                TAGS => $tags,
-                ENTRY => $entry
-            };
-            # Reset for the next entry.
-            $tags = [];
-            $entry = "";
+sub load_encyclopedia
+{
+    # Read the text descriptions from the help database.
+    open my $DBASE, "<", "${nethome}/dat/data.base" or die $!;
+    my @entries;
+    my $tags = [];
+    my $entry = "";
+    while (my $l = <$DBASE>) {
+        next if ($l =~ /^#/); # Ignore comments
+        # Lines beginning with non-whitespace are tags
+        if ($l =~ /^\S/) {
+            # If $entry is non-empty, then the last entry is done, push it.
+            if ($entry) {
+                #print STDERR "Entry:\n@{$tags}\n$entry\n";
+                push @entries, {
+                    TAGS => $tags,
+                    ENTRY => $entry
+                };
+                # Reset for the next entry.
+                $tags = [];
+                $entry = "";
+            }
+            chomp $l;
+            # Set up the tag for future pattern matches.
+            $l =~ s/\*/.*/g;
+            $l =~ s/\~/\\~/;
+            # There can be multiple tags per entry.
+            push @$tags, $l;
         }
-        chomp $l;
-        # Set up the tag for future pattern matches.
-        $l =~ s/\*/.*/g;
-        $l =~ s/\~/\\~/;
-        # There can be multiple tags per entry.
-        push @$tags, $l;
+        else {
+            $entry .= $l;    #Encyclopedia template automatically does the <br>.
+        }
     }
-    else {
-        $entry .= $l;    #Encyclopedia template automatically does the <br>.
-    }
+    return @entries;
 }
+
+my @entries = load_encyclopedia();
 
 #Monsters are declared in monst.c. In 3.7.0, this was moved to be in monsters.h (#included from monst.c)
 my $src_filename = 'src/monst.c';
@@ -777,7 +784,6 @@ while (my $l = <$MONST>) {
     if ($l =~ /^\s+MON/) {
         $curr_mon = 1;
         $the_mon = "";
-        
         $seen_a_mon = 1;
     }
 
@@ -817,10 +823,6 @@ sub output_monster_html
     {
         # Name generation is due to issues like were-creatures with multiple entries.
         my ($htmlname, $print_name) = gen_names($m);
-        if ($monsters[0])
-        {
-            my ($nexthtml, $foo) = gen_names($monsters[0]);
-        }
 
         print "HTML: $htmlname\n";
 
@@ -862,6 +864,9 @@ sub output_monster_html
         
         my $ac = $m->{LEVEL}->{AC};
         my $align = $m->{LEVEL}->{ALN};
+        #Special case for the wizard. Might break on some variants.
+        $align = "unaligned{{refsrc|monst.c|$m->{REF}|comment=The Wizard is the only always-unaligned monster in NetHack (though some other monsters can be set to unaligned if generated under special conditions)}}"
+            if $align eq 'A_NONE';
         $ac =~ s/-/&minus;/;
         $align =~ s/-/&minus;/;
         
@@ -886,6 +891,10 @@ EOF
             $atks = " |attacks=";
             for my $a (@{$m->{ATK}})
             {
+                #Track unknown attack types and damage types.
+                $unknowns{$a->{AT}} = $print_name if !defined $attacks{$a->{AT}};
+                $unknowns{$a->{AD}} = $print_name if !defined $damage{$a->{AD}};
+                
                 if ($a->{D} > 0)
                 {
                     $atks .= "$attacks{$a->{AT}} $a->{N}d$a->{D}$damage{$a->{AD}}, ";
@@ -894,10 +903,6 @@ EOF
                 {
                     $atks .= "$attacks{$a->{AT}}$damage{$a->{AD}}, ";
                 }
-                
-                #Track unknown attack types and damage types.
-                $unknowns{$a->{AT}} = $print_name if !defined $attacks{$a->{AT}};
-                $unknowns{$a->{AD}} = $print_name if !defined $damage{$a->{AD}};
             }
             #Quick fix for commas.
             $atks = substr($atks, 0, length($atks)-2) if $atks =~ m/, $/;
@@ -997,7 +1002,8 @@ EOF
         }
         push @resistances, 'magic' if $hasmagic;
         $resistances = "None" if !@resistances;
-        $resistances = join ',', @resistances if @resistances;
+        #TODO: Capitalize words.
+        $resistances = join ', ', @resistances if @resistances;
         print $HTML " |resistances=$resistances\n";
 
         # Now output all the other flags of interest.
@@ -1104,7 +1110,7 @@ EOF
 
         #print Dumper(@entries), "\n";
 
-        $entry = lookup_entry($m->{NAME});
+        my $entry = lookup_entry($m->{NAME});
         print $HTML "\n}}\n\n\n\n\n\n";
         if ($entry) {
             print $HTML "\n==Encyclopedia Entry==\n\n\n{{encyclopedia|$entry}}\n";
@@ -1162,13 +1168,7 @@ HEADER
     close $HTML;
 }
 
-output_monster_html();
-output_monsters_by_exp();
 
-if (scalar keys %unknowns) {
-    print "Flags and other constants that couldn't be resolved:\n";
-    print Dumper(\%unknowns);
-}
 
 # Handy subs follow...
 
@@ -1300,7 +1300,7 @@ sub gen_conveyance
         }
     }
     else {
-        foreach my $key (keys(%resistances))
+        foreach my $key (sort keys(%resistances))
         {
             $resistances{$key} = int($resistances{$key} / $count);
             $ret .= "$key ($resistances{$key}\%), ";
@@ -1333,15 +1333,15 @@ sub gen_conveyance
     $ret .= "Cures [[stoning]], " if $stoning;
 
     #UnNetHack
-    $ret .= "Alters luck, " if $m->{NAME} eq 'evil eye';  #BUC dependent.
+    $ret .= "Alters luck, " if $unnethack && $m->{NAME} eq 'evil eye';  #BUC dependent.
     
     #SLASHTHEM adds charisma bonus
     #nymph and gorgon are handled separately but appear to be identical.
     #Hard coding in the 10%...
-    $ret .= "Increase charisma (10%), " if $m->{NAME} eq 'gorgon' || $m->{SYMBOL} eq 'NYMPH';
+    $ret .= "Increase charisma (10%), " if $slashthem && ($m->{NAME} eq 'gorgon' || $m->{SYMBOL} eq 'NYMPH');
     
     #Polymorph. Sandestins do not leave a corpse so I'm not mentioning it, although it does apply to digesters.
-    $ret = "Causes [[polymorph]], " if ($m->{NAME} =~ /chameleon/ || $m->{NAME} =~ /doppelganger/ || $m->{NAME} =~ /genetic engineer/);
+    $ret .= "Causes [[polymorph]], " if ($m->{NAME} =~ /chameleon/ || $m->{NAME} =~ /doppelganger/ || $m->{NAME} =~ /genetic engineer/);
 
     return "None" if $ret eq "";
     
@@ -1502,7 +1502,6 @@ sub calc_difficulty
     $n+=2 if $m->{GEN} =~ /G_LGROUP/;
     $n+=4 if $m->{GEN} =~ /G_VLGROUP/;      #SLASH'EM
 
-
     my $has_ranged_atk = 0;
 
     #For higher ac values
@@ -1535,8 +1534,6 @@ sub calc_difficulty
 
             #dNetHack extends the "magc" if with the following:
             $n++ if $dnethack && $a->{AT} =~ m/AT_MMGC|AT_TUCH|AT_SHDW|AT_TNKR/;
-
-
 
             #Add: +2 for poisonous, were, stoning, drain life attacks
             #    +1 for all other non-pure-physical attacks (except grid bugs)
@@ -1664,7 +1661,7 @@ sub parse_permonst
 sub parse_monattk
 {
     my $filename = shift;       #Full path.
-    die "Can't find permonst.h" unless -f $filename;
+    die "Can't find monattk.h" unless -f $filename;
     
     open my $fh, "<", $filename or die "open failed - $!";
     
@@ -1781,4 +1778,12 @@ sub load_json_data
     #print($filedata);
     my $data = decode_json($filedata);
     return $data;
+}
+
+output_monster_html();
+output_monsters_by_exp();
+
+if (scalar keys %unknowns) {
+    print "Flags and other constants that couldn't be resolved:\n";
+    print Dumper(\%unknowns);
 }
