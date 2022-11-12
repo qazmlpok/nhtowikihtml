@@ -659,7 +659,6 @@ def load_encyclopedia():
                 tags.append(l)
             else:
                 entry += l
-    print(entries)
     return entries
 
 entries = load_encyclopedia()
@@ -1046,7 +1045,7 @@ def gen_conveyance(m):
             continue
         r = consts['flags'][mr]
         #print(m)
-        resistances[r] = (int(level) * 100) // 15
+        resistances[r] = (level * 100) / 15
         
         if (m['NAME'] == 'killer bee' or m['NAME'] == 'scorpion') and mr == 'MR_POISON':
             #These two monsters have a hardcoded "bonus" chance to grant poison resistance.
@@ -1323,13 +1322,14 @@ def calc_difficulty(m):
             n += 1
         if ac < -20:
             n += 1
-            
+
     #For very fast monsters
     mov = int(m['LEVEL']['MOV'])
     if mov >= 18:
         n += 1
     #for each attack and "Special" attack
     #Combining the two sections, plus determine if it has a ranged attack.
+
     if m['ATK']:
         for a in m['ATK']:
             #Add one for each: Not passive attack, magic attack, Weapon attack if strong
@@ -1375,7 +1375,7 @@ def calc_difficulty(m):
     #"tom's nasties"
     if ('M2_NASTY' in m['FLGS']) and (slashem or slashthem or slashem_extended):
         n += 5
-    
+
     if n == 0:
         lvl -= 1
     elif n >= 6:
@@ -1401,9 +1401,9 @@ def is_ranged_attk(atk):
         raise Exception(f'Unknown atk type {atk}')
     if 'AT_WEAP' not in atk_ints:
         raise Exception(f'Unknown atk type AT_WEAP')
-    atk_int = atk_ints[atk]
-    wep_int = atk_ints['AT_WEAP']
-    
+    atk_int = int(atk_ints[atk])
+    wep_int = int(atk_ints['AT_WEAP'])
+
     return atk_int >= wep_int
  
 

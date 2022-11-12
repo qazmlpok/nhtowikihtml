@@ -1493,6 +1493,7 @@ sub calc_difficulty
     my $m = shift;
     my $lvl = $m->{LEVEL}->{LVL};
     my $n = 0;
+
     #done in parse_level
     #$lvl = (2*($lvl - 6) / 4) if ($lvl > 49);
     #...except for dNetHack
@@ -1520,8 +1521,6 @@ sub calc_difficulty
 
     #for each attack and "Special" attack
     #Combining the two sections, plus determine if it has a ranged attack.
-
-    my $temp = $n;
 
     if (scalar(@{$m->{ATK}})) 
     {
@@ -1587,7 +1586,7 @@ sub calc_difficulty
     #Store in hash
     my $final = (($lvl >= 0) ? int($lvl) : 0);
     $m->{DIFF} = $final;
-    
+
     return $final;
 }
 
@@ -1603,7 +1602,7 @@ sub is_ranged_attk
     return 1 if $atk =~ m/AT_BREA|AT_SPIT|AT_GAZE/;
     my $atk_int = $atk_ints->{$atk} // die "Unknown atk type $atk";
     my $WEAP_int = $atk_ints->{AT_WEAP} // die "Unknown atk type AT_WEAP";
-    
+
     return 1 if $atk_int >= $WEAP_int;
     return 0;
 }
