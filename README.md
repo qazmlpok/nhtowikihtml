@@ -6,6 +6,10 @@ Based off the nhtohtml script by Robert Sim, and can be found at http://www.cim.
 The script was modified to generated mediawiki templates (specifically for use on the NetHack wiki, https://nethackwiki.com/) to include as the infobox for each monster.
 The output relies on the existance of the templates 'monster', 'attributes', and 'encyclopedia'. The output is not very useful by itself.
 
+## Python
+
+The script has also been ported to Python (requires 3.6 or higher). The Perl script should still be considered the master copy, and the Python script is just a copy. Additionally, it is very much a Perl script written in Python - no attempt to make it "pythonic" was attempted.
+
 # Supported NetHack versions and variants
 - NetHack 3.4.3
 - NetHack 3.6.x
